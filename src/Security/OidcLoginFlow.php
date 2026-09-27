@@ -22,6 +22,9 @@ final class OidcLoginFlow
     public const SESSION_SID      = '_sls.sid';
     public const SESSION_AUTH_AT  = '_sls.auth_at';
     public const SESSION_ID_TOKEN = '_sls.id_token';
+    /** The user's SLS access token (aud = this app) and its expiry — for token exchange (doc 09). */
+    public const SESSION_ACCESS_TOKEN         = '_sls.access_token';
+    public const SESSION_ACCESS_TOKEN_EXPIRES = '_sls.access_token_expires';
 
     private const PENDING_TTL = 600;
     private const MAX_PENDING = 5;
@@ -83,6 +86,19 @@ final class OidcLoginFlow
         }
 
         return ['nonce' => $entry['nonce'], 'verifier' => $entry['verifier'], 'target' => $entry['target']];
+    }
+
+    /**
+     * The signed-in user's SLS access token, while it is valid for at least `$leeway` more seconds —
+     * the `subject_token` for {@see \Smartlabsys\SlsConnectorBundle\Client\SlsClient::exchangeToken()}
+     * when calling a sibling app on the user's behalf. Null when expired: sign in again.
+     */
+    public static function accessToken(SessionInterface $session, int $leeway = 30): ?string
+    {
+        $token   = $session->get(self::SESSION_ACCESS_TOKEN);
+        $expires = (int) $session->get(self::SESSION_ACCESS_TOKEN_EXPIRES, 0);
+
+        return is_string($token) && $expires > time() + $leeway ? $token : null;
     }
 
     /** Only local absolute paths — never another host (open redirect). */

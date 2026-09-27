@@ -18,6 +18,9 @@ use Symfony\Component\Security\Http\Authenticator\Passport\Badge\UserBadge;
  * tokens whose `aud` is this instance, mapped to the local user by
  * {@see SlsUserResolverInterface::loadBySlsUserId()}. The validated claims are kept on the request
  * as `_sls_claims` (org, roles, scope). Service tokens (`sub` = `sls`) are refused here.
+ *
+ * Tokens a sibling app got for itself (`sub` = its `client_id`, doc 09) become an {@see SlsAppUser}
+ * when `sls_connector.api.accept_app_tokens` is on, and are refused otherwise.
  */
 final class SlsUserTokenHandler implements AccessTokenHandlerInterface
 {
@@ -28,13 +31,11 @@ final class SlsUserTokenHandler implements AccessTokenHandlerInterface
         private RequestStack $requestStack,
         private ?SlsUserResolverInterface $resolver = null,
         private ?LoggerInterface $logger = null,
+        private bool $acceptAppTokens = false,
     ) {}
 
     public function getUserBadgeFrom(#[\SensitiveParameter] string $accessToken): UserBadge
     {
-        if ($this->resolver === null) {
-            throw new \LogicException('Implement ' . SlsUserResolverInterface::class . ' to accept SLS user tokens.');
-        }
         try {
             $claims = $this->validator->validateAccessToken($accessToken);
         } catch (InvalidTokenException|SlsUnavailableException $e) {
@@ -44,6 +45,18 @@ final class SlsUserTokenHandler implements AccessTokenHandlerInterface
         }
         if ($claims['sub'] === SlsServiceTokenHandler::SUBJECT) {
             throw new BadCredentialsException('SLS service tokens are not accepted here.');
+        }
+        if (isset($claims['client_id']) && $claims['sub'] === $claims['client_id']) {
+            if (!$this->acceptAppTokens) {
+                throw new BadCredentialsException('App tokens are not accepted here.');
+            }
+            $this->requestStack->getCurrentRequest()?->attributes->set(self::CLAIMS_ATTRIBUTE, $claims);
+            $app = new SlsAppUser($claims);
+
+            return new UserBadge($app->getUserIdentifier(), static fn () => $app);
+        }
+        if ($this->resolver === null) {
+            throw new \LogicException('Implement ' . SlsUserResolverInterface::class . ' to accept SLS user tokens.');
         }
 
         $user = $this->resolver->loadBySlsUserId($claims['sub'], $claims);

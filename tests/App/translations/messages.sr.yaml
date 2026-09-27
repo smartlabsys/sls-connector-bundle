@@ -1,0 +1,23 @@
+demo:
+    siblings:
+        title: Srodne aplikacije
+        back: Početna
+        refresh: Pitaj SLS ponovo
+        intro: 'Aplikacije koje je vaša organizacija povezala pored %app% (prijavljeni ste kao %user%). Pozovite njihov /api/ping kao ova aplikacija ili u vaše ime.'
+        no_org: Vaša SLS sesija nema organizaciju.
+        empty: Nema drugih povezanih aplikacija.
+        column:
+            app: Aplikacija
+            status: Status
+            api: API
+        status:
+            active: Aktivna
+            suspended: Suspendovana
+        call_as_app: Pozovi kao ova aplikacija
+        call_as_user: Pozovi u moje ime
+        result:
+            app: '%app% je odgovorila ovoj aplikaciji'
+            user: '%app% je odgovorila u vaše ime'
+            status: HTTP status
+        error:
+            session_expired: Vaš SLS pristupni token je istekao — prijavite se ponovo da biste pozivali u svoje ime.

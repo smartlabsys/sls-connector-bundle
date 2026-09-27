@@ -102,6 +102,12 @@ final class SlsConnectorBundle extends AbstractBundle
                         ->scalarNode('mcp')->defaultNull()->end()
                     ->end()
                 ->end()
+                ->arrayNode('api')
+                    ->addDefaultsIfNotSet()
+                    ->children()
+                        ->booleanNode('accept_app_tokens')->defaultFalse()->info('Accept sibling apps calling as themselves (SlsAppUser, ROLE_SLS_APP) on the user-token firewall.')->end()
+                    ->end()
+                ->end()
                 ->arrayNode('oidc')
                     ->addDefaultsIfNotSet()
                     ->children()
@@ -147,7 +153,8 @@ final class SlsConnectorBundle extends AbstractBundle
             ->set('sls_connector.jwks_file', $config['jwks_file'])
             ->set('sls_connector.oidc', $config['oidc'])
             ->set('sls_connector.oidc.scopes', $config['oidc']['scopes'])
-            ->set('sls_connector.oidc.rp_logout', $config['oidc']['rp_logout']);
+            ->set('sls_connector.oidc.rp_logout', $config['oidc']['rp_logout'])
+            ->set('sls_connector.api.accept_app_tokens', $config['api']['accept_app_tokens']);
 
         $container->import('../config/services.php');
 

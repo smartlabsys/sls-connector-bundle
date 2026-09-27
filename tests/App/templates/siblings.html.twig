@@ -1,0 +1,42 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}{{ 'demo.siblings.title'|trans }}{% endblock %}
+
+{% block body %}
+    <h1>{{ 'demo.siblings.title'|trans }}</h1>
+    <p><a href="{{ path('demo_home') }}">{{ 'demo.siblings.back'|trans }}</a> · <a href="{{ path('demo_siblings', {refresh: 1}) }}">{{ 'demo.siblings.refresh'|trans }}</a></p>
+    <p>{{ 'demo.siblings.intro'|trans({'%app%': self, '%user%': user.email}) }}</p>
+
+    {% if error %}<p class="error" id="siblings-error">{{ error|trans }}</p>{% endif %}
+
+    {% if organizationId is null %}
+        <p id="siblings-no-org">{{ 'demo.siblings.no_org'|trans }}</p>
+    {% elseif connections is empty %}
+        <p id="siblings-empty">{{ 'demo.siblings.empty'|trans }}</p>
+    {% else %}
+        <table id="siblings-table">
+            <thead><tr><th>{{ 'demo.siblings.column.app'|trans }}</th><th>{{ 'demo.siblings.column.status'|trans }}</th><th>{{ 'demo.siblings.column.api'|trans }}</th><th></th></tr></thead>
+            <tbody>
+            {% for c in connections %}
+                <tr data-app="{{ c.app }}">
+                    <td><code>{{ c.app }}</code></td>
+                    <td>{{ ('demo.siblings.status.' ~ c.status)|trans }}</td>
+                    <td><code>{{ c.api_url ?? '—' }}</code></td>
+                    <td>
+                        {% if c.api_url %}
+                            <a href="{{ path('demo_siblings', {call: c.app, as: 'app'}) }}">{{ 'demo.siblings.call_as_app'|trans }}</a> ·
+                            <a href="{{ path('demo_siblings', {call: c.app, as: 'user'}) }}">{{ 'demo.siblings.call_as_user'|trans }}</a>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+
+    {% if result %}
+        <h2 id="siblings-result-title">{{ ('demo.siblings.result.' ~ (result.as == 'user' ? 'user' : 'app'))|trans({'%app%': result.app}) }}</h2>
+        <p>{{ 'demo.siblings.result.status'|trans }}: <code id="siblings-result-status">{{ result.status ?? 'token error' }}</code></p>
+        <pre id="siblings-result">{{ result.body|json_encode(constant('JSON_PRETTY_PRINT') b-or constant('JSON_UNESCAPED_SLASHES')) }}</pre>
+    {% endif %}
+{% endblock %}

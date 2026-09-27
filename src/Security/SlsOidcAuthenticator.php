@@ -37,9 +37,10 @@ final class SlsOidcAuthenticator extends AbstractAuthenticator
 {
     use TargetPathTrait;
 
-    private const IDENTITY_ATTRIBUTE = 'sls_identity';
-    private const TARGET_ATTRIBUTE   = 'sls_target';
-    private const ID_TOKEN_ATTRIBUTE = 'sls_id_token';
+    private const IDENTITY_ATTRIBUTE     = 'sls_identity';
+    private const TARGET_ATTRIBUTE       = 'sls_target';
+    private const ID_TOKEN_ATTRIBUTE     = 'sls_id_token';
+    private const ACCESS_TOKEN_ATTRIBUTE = 'sls_access_token';
 
     /** @param array{default_target_path: string, failure_path: string} $oidcConfig */
     public function __construct(
@@ -107,6 +108,9 @@ final class SlsOidcAuthenticator extends AbstractAuthenticator
         $passport->setAttribute(self::IDENTITY_ATTRIBUTE, $identity);
         $passport->setAttribute(self::TARGET_ATTRIBUTE, $pending['target']);
         $passport->setAttribute(self::ID_TOKEN_ATTRIBUTE, $tokens['id_token']);
+        $passport->setAttribute(self::ACCESS_TOKEN_ATTRIBUTE, is_string($tokens['access_token'] ?? null)
+            ? [$tokens['access_token'], time() + (int) ($tokens['expires_in'] ?? 0)]
+            : null);
 
         return $passport;
     }
@@ -117,6 +121,7 @@ final class SlsOidcAuthenticator extends AbstractAuthenticator
         $token->setAttribute(self::IDENTITY_ATTRIBUTE, $passport->getAttribute(self::IDENTITY_ATTRIBUTE));
         $token->setAttribute(self::TARGET_ATTRIBUTE, $passport->getAttribute(self::TARGET_ATTRIBUTE));
         $token->setAttribute(self::ID_TOKEN_ATTRIBUTE, $passport->getAttribute(self::ID_TOKEN_ATTRIBUTE));
+        $token->setAttribute(self::ACCESS_TOKEN_ATTRIBUTE, $passport->getAttribute(self::ACCESS_TOKEN_ATTRIBUTE));
 
         return $token;
     }
@@ -130,6 +135,11 @@ final class SlsOidcAuthenticator extends AbstractAuthenticator
         $session->set(OidcLoginFlow::SESSION_SID, $identity->sessionId());
         $session->set(OidcLoginFlow::SESSION_AUTH_AT, time());
         $session->set(OidcLoginFlow::SESSION_ID_TOKEN, $token->getAttribute(self::ID_TOKEN_ATTRIBUTE));
+        [$accessToken, $expires] = $token->getAttribute(self::ACCESS_TOKEN_ATTRIBUTE) ?? [null, null];
+        $session->set(OidcLoginFlow::SESSION_ACCESS_TOKEN, $accessToken);
+        $session->set(OidcLoginFlow::SESSION_ACCESS_TOKEN_EXPIRES, $expires);
+        // Keep the token out of the serialized security token.
+        $token->setAttribute(self::ACCESS_TOKEN_ATTRIBUTE, null);
 
         $target = $token->getAttribute(self::TARGET_ATTRIBUTE)
             ?? OidcLoginFlow::safeTarget($this->getTargetPath($session, $firewallName))

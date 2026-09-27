@@ -1,0 +1,23 @@
+demo:
+    siblings:
+        title: Sibling apps
+        back: Home
+        refresh: Ask SLS again
+        intro: 'Apps your organization connected next to %app% (signed in as %user%). Call their /api/ping as this app, or on your behalf.'
+        no_org: Your SLS session carries no organization.
+        empty: No other connected apps.
+        column:
+            app: App
+            status: Status
+            api: API
+        status:
+            active: Active
+            suspended: Suspended
+        call_as_app: Call as this app
+        call_as_user: Call as me
+        result:
+            app: '%app% answered this app'
+            user: '%app% answered on your behalf'
+            status: HTTP status
+        error:
+            session_expired: Your SLS access token expired — sign in again to call on your behalf.

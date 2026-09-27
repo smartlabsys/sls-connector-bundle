@@ -69,6 +69,8 @@ sls_connector:
         - { key: food-lab-basic, version: 3, label: { en: 'Food lab – basic' }, parameters: [] }
     events: { emits: [], consumes: [] }
     endpoints: { api: /api, mcp: null }      # optional manifest endpoints
+    api:
+        accept_app_tokens: false             # let sibling apps call your API as themselves
     oidc:
         scopes: 'openid profile email org apps'
         default_target_path: /
@@ -119,6 +121,11 @@ For the login button, call the `sls_login_url()` Twig function (with an optional
 <a href="{{ sls_login_url() }}">{{ 'sls.login.button'|trans }}</a>
 ```
 
+With `api.accept_app_tokens: true`, a sibling app's own token (`sub` = its `client_id`) passes
+the `api` firewall as a `Security\SlsAppUser` (`ROLE_SLS_APP`, with `app`, `instanceId`,
+`organizationId` and `tenantId`). Otherwise such tokens are refused. SLS service tokens are
+always refused there.
+
 The back-channel logout endpoint records the revoked SLS session in the cache pool. On the
 next request, a listener ends any local session that belongs to it, so use a cache pool
 that all web nodes share.
@@ -154,7 +161,13 @@ public function onAssigned(SlsWebhookEvent $event): void { /* $event->data, ->te
 
 The signature is `X-SLS-Signature: sha256=<hex HMAC-SHA256(SLS_WEBHOOK_SECRET, "{X-SLS-Timestamp}.{raw body}")>`,
 and the timestamp must be within ±5 minutes. Each `event_id` is processed once, and the bundle
-keeps a record of processed events for 7 days.
+keeps a record of processed events for 7 days. Answer 2xx quickly: SLS retries anything else
+after 1, 5, 15 and 60 minutes.
+
+SLS sends `connection.created|suspended|resumed|disconnected` (to every app of the org, so you
+learn about siblings), `user.assigned|updated|unassigned` (to the assignment's app) and
+`organization.updated`. `tenant_id` is your tenant for the org. The bundle drops its cached
+discovery answer on `connection.*` events.
 
 ### Calling SLS and sibling apps
 
@@ -162,8 +175,27 @@ keeps a record of processed events for 7 days.
 $client->serviceToken(['sls:read']);                          // client credentials, cached
 $client->connections($orgId);                                 // discovery, cached 5 min
 $client->callSibling($orgId, 'lims', 'GET', '/samples');      // as this app
-$client->callSibling($orgId, 'lims', 'GET', '/samples', [], $userAccessToken); // on behalf of a user
+$client->callSibling($orgId, 'lims', 'GET', '/samples', [], OidcLoginFlow::accessToken($session)); // as the user
+$client->seedCompleted($tenantId, $job);                      // an async seed job finished
+$client->sendEvent('some.event', $tenantId, $data);           // any event SLS accepts
 ```
+
+- **As this app**, the sibling gets a token with `aud` = the sibling, `sub` = your client id and
+  `tenant_id` = the org's tenant *there*. SLS issues it only while both apps are connected to the
+  org.
+- **As the user**, SLS swaps the user's access token (RFC 8693 token exchange). The new token
+  carries the user's roles in the sibling, `tenant_id` there, and `act: {sub, app, instance_id}`
+  naming your app. SLS refuses it if the user isn't assigned to the sibling.
+- **Where the user's token comes from:** after "Sign in with Smartlab" it is kept in the session.
+  `OidcLoginFlow::accessToken($session)` returns it, or null once it has expired; the user then
+  signs in again.
+- **Errors:**
+  - A refused token request throws `SlsTokenException` (`invalid_target` / `invalid_grant`).
+  - A refused event throws `SlsEventException` (unknown tenant or job, unsupported type).
+  - SLS being unreachable throws `SlsUnavailableException`.
+
+Report async seeds with `seedCompleted()` once the job ends. SLS also keeps polling
+`GET /seeds/{job}` as a fallback.
 
 ## Contract test suite
 
@@ -199,3 +231,15 @@ it against a real SLS, put the registration bundle in `tests/App/.env.local` and
 php tests/App/bin-console.php sls:connector:warmup
 php -S 127.0.0.1:8090 -t tests/App/public tests/App/public/index.php
 ```
+
+To try sibling calls, run a second demo app (`demo2`, own store and session cookie) with its own
+registration bundle in `tests/App/.env.dev2.local` (`SLS_AUDIENCE=http://127.0.0.1:8091`):
+
+```bash
+APP_ENV=dev2 php -S 127.0.0.1:8091 -t tests/App/public tests/App/public/index.php
+```
+
+`/siblings` lists the org's other apps and calls their `/api/ping` as the app or as the user.
+With `DEMO_SEED_ASYNC=1`, seed jobs stay queued until
+`php tests/App/bin-console.php demo:seed:complete <tenant> <job> [--fail]` finishes them and
+sends `seed.completed` to SLS.

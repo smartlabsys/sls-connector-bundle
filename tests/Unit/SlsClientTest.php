@@ -6,9 +6,11 @@ namespace Smartlabsys\SlsConnectorBundle\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Smartlabsys\SlsConnectorBundle\Client\SlsClient;
+use Smartlabsys\SlsConnectorBundle\Client\SlsEventException;
 use Smartlabsys\SlsConnectorBundle\Client\SlsTokenException;
 use Smartlabsys\SlsConnectorBundle\Exception\SlsUnavailableException;
 use Smartlabsys\SlsConnectorBundle\Jwt\SlsMetadata;
+use Smartlabsys\SlsConnectorBundle\Provisioning\Model\SeedJob;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\JsonMockResponse;
@@ -97,7 +99,84 @@ final class SlsClientTest extends TestCase
         $last = end($this->requests);
         self::assertSame('https://lims.test/api/samples', $last['url']);
         self::assertContains('Authorization: Bearer for-lims', $last['options']['headers']);
-        self::assertStringContainsString('resource=' . rawurlencode('https://lims.test'), $this->requestsTo('/oauth2/token')[1]['options']['body']);
+        $body = $this->requestsTo('/oauth2/token')[1]['options']['body'];
+        self::assertStringContainsString('resource=' . rawurlencode('https://lims.test'), $body);
+        self::assertStringContainsString('org_id=org-1', $body);
+    }
+
+    public function testSiblingServiceTokenNeedsOrganization(): void
+    {
+        $client = $this->client([]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $client->serviceToken([], 'https://lims.test');
+    }
+
+    public function testSendEvent(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['status' => 'received']),
+        ]);
+
+        self::assertSame('received', $client->sendEvent('demo.happened', 'tenant-1', ['x' => 1], 'evt-1'));
+        $call = $this->requestsTo('/api/webhook/cmd/receive')[0];
+        self::assertSame('POST', $call['method']);
+        self::assertContains('Authorization: Bearer svc', $call['options']['headers']);
+        $body = json_decode($call['options']['body'], true);
+        self::assertSame('evt-1', $body['event_id']);
+        self::assertSame('demo.happened', $body['type']);
+        self::assertSame('tenant-1', $body['tenant_id']);
+        self::assertSame(['x' => 1], $body['data']);
+        self::assertStringNotContainsString('org_id', $this->requestsTo('/oauth2/token')[0]['options']['body']);
+    }
+
+    public function testSeedCompletedUsesStableEventId(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['status' => 'received']),
+            new JsonMockResponse(['status' => 'duplicate']),
+        ]);
+        $job = new SeedJob('job-1', SeedJob::STATUS_SUCCEEDED, ['users' => 2]);
+
+        self::assertSame('received', $client->seedCompleted('tenant-1', $job));
+        self::assertSame('duplicate', $client->seedCompleted('tenant-1', $job));
+        [$first, $second] = array_map(
+            static fn (array $r): array => json_decode($r['options']['body'], true),
+            $this->requestsTo('/api/webhook/cmd/receive'),
+        );
+        self::assertSame($first['event_id'], $second['event_id']);
+        self::assertMatchesRegularExpression('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/', $first['event_id']);
+        self::assertSame('seed.completed', $first['type']);
+        self::assertSame(['job_id' => 'job-1', 'status' => 'succeeded', 'summary' => ['users' => 2]], array_intersect_key($first['data'], ['job_id' => 1, 'status' => 1, 'summary' => 1]));
+    }
+
+    public function testRefusedEventBecomesSlsEventException(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['errors' => [['message' => 'No connection.']]], ['http_code' => 404]),
+        ]);
+
+        try {
+            $client->sendEvent('seed.completed', 'nope');
+            self::fail('Expected SlsEventException');
+        } catch (SlsEventException $e) {
+            self::assertSame(404, $e->status);
+            self::assertSame(['No connection.'], $e->errors);
+        }
+    }
+
+    public function testFailingSlsOnEventIsUnavailable(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse([], ['http_code' => 503]),
+        ]);
+
+        $this->expectException(SlsUnavailableException::class);
+        $client->sendEvent('seed.completed', 'tenant-1');
     }
 
     public function testCallSiblingWithoutConnection(): void

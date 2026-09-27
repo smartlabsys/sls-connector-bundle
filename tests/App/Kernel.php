@@ -23,6 +23,8 @@ use Symfony\Component\Routing\Loader\Configurator\RoutingConfigurator;
  *
  * `test` env: fixed SLS settings and a local JWKS file (the contract suite writes it).
  * `dev` env: the SLS_* registration bundle from the environment (see public/index.php).
+ * `dev2` env: a second app (`demo2`, own store / session cookie) to try sibling calls (doc 09).
+ * `DEMO_SEED_ASYNC=1` leaves seed jobs queued until `demo:seed:complete` finishes them.
  */
 final class Kernel extends BaseKernel
 {
@@ -44,12 +46,15 @@ final class Kernel extends BaseKernel
     protected function configureContainer(ContainerConfigurator $container): void
     {
         $test = $this->environment === 'test';
+        $key  = $this->environment === 'dev2' ? 'demo2' : 'demo';
+
+        $container->parameters()->set('env(DEMO_SEED_ASYNC)', '0');
 
         $container->extension('framework', [
             'secret'               => 'demo-secret',
             'test'                 => $test,
             'http_method_override' => false,
-            'session'              => ['name' => 'DEMOSESSID', 'handler_id' => null, 'cookie_secure' => 'auto', 'cookie_samesite' => 'lax', 'storage_factory_id' => $test ? 'session.storage.factory.mock_file' : 'session.storage.factory.native'],
+            'session'              => ['name' => strtoupper($key) . 'SESSID', 'handler_id' => null, 'cookie_secure' => 'auto', 'cookie_samesite' => 'lax', 'storage_factory_id' => $test ? 'session.storage.factory.mock_file' : 'session.storage.factory.native'],
             'router'               => ['utf8' => true],
             'default_locale'       => 'en',
             'translator'           => ['default_path' => '%kernel.project_dir%/translations', 'fallbacks' => ['en']],
@@ -65,10 +70,10 @@ final class Kernel extends BaseKernel
             'client_id'      => $test ? 'demo-client' : '%env(SLS_CLIENT_ID)%',
             'client_secret'  => $test ? 'demo-client-secret' : '%env(SLS_CLIENT_SECRET)%',
             'webhook_secret' => $test ? 'demo-webhook-secret' : '%env(SLS_WEBHOOK_SECRET)%',
-            'app'            => ['key' => 'demo', 'name' => 'Connector Demo', 'version' => '1.0.0'],
+            'app'            => ['key' => $key, 'name' => $key === 'demo' ? 'Connector Demo' : 'Connector Demo 2', 'version' => '1.0.0'],
             'roles'          => [
-                ['key' => 'demo:admin', 'label' => ['en' => 'Demo admin', 'sr' => 'Demo administrator']],
-                ['key' => 'demo:viewer', 'label' => ['en' => 'Viewer', 'sr' => 'Posmatrač']],
+                ['key' => $key . ':admin', 'label' => ['en' => 'Demo admin', 'sr' => 'Demo administrator']],
+                ['key' => $key . ':viewer', 'label' => ['en' => 'Viewer', 'sr' => 'Posmatrač']],
             ],
             'seed_templates' => [[
                 'key'         => 'demo-basic',
@@ -77,6 +82,7 @@ final class Kernel extends BaseKernel
                 'parameters'  => [['key' => 'lab_name', 'type' => 'string']],
             ]],
             'endpoints'      => ['api' => '/api'],
+            'api'            => ['accept_app_tokens' => true],
             'oidc'           => ['default_target_path' => '/', 'failure_path' => '/login'],
             'jwks_file'      => $test ? '%kernel.project_dir%/var/test/sls-jwks.json' : null,
         ]);
@@ -103,7 +109,7 @@ final class Kernel extends BaseKernel
             ],
             'access_control' => [
                 ['path' => '^/api', 'roles' => 'IS_AUTHENTICATED_FULLY'],
-                ['path' => '^/account', 'roles' => 'ROLE_USER'],
+                ['path' => '^/(account|siblings)', 'roles' => 'ROLE_USER'],
             ],
         ]);
 
@@ -111,6 +117,8 @@ final class Kernel extends BaseKernel
         $services->load(__NAMESPACE__ . '\\', __DIR__ . '/src/');
         $services->load(__NAMESPACE__ . '\\Controller\\', __DIR__ . '/src/Controller/')->tag('controller.service_arguments');
         $services->set(Store\JsonStore::class)->arg('$file', '%kernel.project_dir%/var/%kernel.environment%/store.json');
+        $services->set(Controller\DemoController::class)->arg('$appKey', $key)->tag('controller.service_arguments');
+        $services->set(Sls\DemoSeedHandler::class)->arg('$async', '%env(bool:DEMO_SEED_ASYNC)%');
         $services->set('security.demo_login_entry_point', Security\LoginEntryPoint::class);
     }
 

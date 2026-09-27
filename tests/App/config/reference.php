@@ -1062,6 +1062,9 @@ use Symfony\Component\Config\Loader\ParamConfigurator as Param;
  *         api?: scalar|Param|null, // Default: null
  *         mcp?: scalar|Param|null, // Default: null
  *     },
+ *     api?: array{
+ *         accept_app_tokens?: bool|Param, // Accept sibling apps calling as themselves (SlsAppUser, ROLE_SLS_APP) on the user-token firewall. // Default: false
+ *     },
  *     oidc?: array{
  *         scopes?: scalar|Param|null, // Default: "openid profile email org apps"
  *         default_target_path?: scalar|Param|null, // Default: "/"
@@ -1080,7 +1083,7 @@ use Symfony\Component\Config\Loader\ParamConfigurator as Param;
  *     security?: SecurityConfig,
  *     twig?: TwigConfig,
  *     sls_connector?: SlsConnectorConfig,
- *     "when@dev"?: array{
+ *     "when@dev2"?: array{
  *         imports?: ImportsConfig,
  *         parameters?: ParametersConfig,
  *         services?: ServicesConfig,
@@ -1168,7 +1171,7 @@ namespace Symfony\Component\Routing\Loader\Configurator;
  *     deprecated?: array{package:string, version:string, message?:string},
  * }
  * @psalm-type RoutesConfig = array{
- *     "when@dev"?: array<string, RouteConfig|ImportConfig|AliasConfig>,
+ *     "when@dev2"?: array<string, RouteConfig|ImportConfig|AliasConfig>,
  *     ...<string, RouteConfig|ImportConfig|AliasConfig>
  * }
  */

@@ -3,3 +3,4 @@
 /.phpunit.cache/
 /tests/App/var/
 /tests/App/.env.local
+/tests/App/.env.*.local

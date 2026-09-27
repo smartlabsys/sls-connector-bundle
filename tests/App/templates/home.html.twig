@@ -5,7 +5,7 @@
     {% if user %}
         <p id="signed-in">Signed in as <strong>{{ user.email }}</strong> (local id <code>{{ user.id }}</code>, SLS sub <code>{{ user.slsSub }}</code>).</p>
         {% if sls.sid ?? null %}<p>SLS session <code>{{ sls.sid }}</code></p>{% endif %}
-        <p><a id="logout" href="{{ path('logout') }}">Log out</a></p>
+        <p><a id="siblings" href="{{ path('demo_siblings') }}">{{ 'demo.siblings.title'|trans }}</a> · <a id="logout" href="{{ path('logout') }}">Log out</a></p>
     {% else %}
         <p id="signed-out">Not signed in. <a href="{{ path('demo_login') }}">Log in</a></p>
     {% endif %}

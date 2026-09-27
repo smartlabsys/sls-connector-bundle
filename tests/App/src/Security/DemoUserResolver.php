@@ -48,11 +48,18 @@ final class DemoUserResolver implements SlsUserResolverInterface
         return DemoUser::fromRow($row);
     }
 
+    /** A signed-in local user, else an active SCIM-provisioned one in the token's tenant (API calls). */
     public function loadBySlsUserId(string $slsUserId, array $claims): ?UserInterface
     {
-        foreach ($this->store->read()['users'] ?? [] as $user) {
+        $data = $this->store->read();
+        foreach ($data['users'] ?? [] as $user) {
             if (($user['sls_sub'] ?? null) === $slsUserId) {
                 return DemoUser::fromRow($user);
+            }
+        }
+        foreach ($data['scim_users'][$claims['tenant_id'] ?? ''] ?? [] as $user) {
+            if (($user['slsUserId'] ?? null) === $slsUserId && $user['active']) {
+                return new DemoUser($user['id'], (string) $user['email'], $user['displayName'], $slsUserId);
             }
         }
 

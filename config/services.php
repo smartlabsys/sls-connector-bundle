@@ -21,6 +21,7 @@ return static function (ContainerConfigurator $container): void {
             ->bind('array $oidcConfig', '%sls_connector.oidc%')
             ->bind('string $scopes', '%sls_connector.oidc.scopes%')
             ->bind('bool $enabled', '%sls_connector.oidc.rp_logout%')
+            ->bind('bool $acceptAppTokens', '%sls_connector.api.accept_app_tokens%')
             ->bind(CacheItemPoolInterface::class, service('sls_connector.cache'))
             ->bind(HttpClientInterface::class, service('sls_connector.http_client'));
 
@@ -37,7 +38,9 @@ return static function (ContainerConfigurator $container): void {
             '../src/Scim/ScimSchemas.php',
             '../src/Security/SlsIdentity.php',
             '../src/Security/SlsServiceUser.php',
+            '../src/Security/SlsAppUser.php',
             '../src/Client/SlsTokenException.php',
+            '../src/Client/SlsEventException.php',
             '../src/Jwt/InvalidTokenException.php',
         ]);
 

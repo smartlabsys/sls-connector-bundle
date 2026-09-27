@@ -7,6 +7,7 @@ namespace Smartlabsys\SlsConnectorBundle\Client;
 use Psr\Cache\CacheItemPoolInterface;
 use Smartlabsys\SlsConnectorBundle\Exception\SlsUnavailableException;
 use Smartlabsys\SlsConnectorBundle\Jwt\SlsMetadata;
+use Smartlabsys\SlsConnectorBundle\Provisioning\Model\SeedJob;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -14,9 +15,8 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 /**
  * App → SLS calls with this instance's OAuth client (doc 05 "App → SLS", doc 09):
  * client-credentials service tokens, the token endpoint (code exchange, token exchange), UserInfo,
- * the discovery API (which sibling apps an org is connected to) and calls to those siblings.
- *
- * The discovery API and token exchange are served by SLS from step 8.1.
+ * the discovery API (which sibling apps an org is connected to), calls to those siblings and
+ * events sent to SLS (`seed.completed`).
  */
 class SlsClient
 {
@@ -36,12 +36,19 @@ class SlsClient
     /**
      * A client-credentials access token for this app, cached until 30 s before it expires.
      *
+     * For a sibling app (`$resource`, RFC 8707) SLS needs the org whose tenant there the call is
+     * for: both apps must be connected to it, and the token carries that tenant's `tenant_id`.
+     *
      * @param string[] $scopes
-     * @param ?string  $resource audience of a sibling app instance (RFC 8707) — doc 09
+     * @param ?string  $resource       audience of a sibling app instance — doc 09
+     * @param ?string  $organizationId SLS org id, required with `$resource`
      */
-    public function serviceToken(array $scopes = [], ?string $resource = null): string
+    public function serviceToken(array $scopes = [], ?string $resource = null, ?string $organizationId = null): string
     {
-        $item = $this->cache->getItem('sls_connector.service_token.' . sha1(implode(' ', $scopes) . '|' . $resource));
+        if ($resource !== null && $organizationId === null) {
+            throw new \InvalidArgumentException('A service token for a sibling app needs the organization id.');
+        }
+        $item = $this->cache->getItem('sls_connector.service_token.' . sha1(implode(' ', $scopes) . '|' . $resource . '|' . $organizationId));
         if ($item->isHit()) {
             return $item->get();
         }
@@ -50,6 +57,7 @@ class SlsClient
             'grant_type' => 'client_credentials',
             'scope'      => $scopes ? implode(' ', $scopes) : null,
             'resource'   => $resource,
+            'org_id'     => $resource !== null ? $organizationId : null,
         ]));
         $ttl = (int) ($response['expires_in'] ?? 60) - 30;
         if ($ttl > 0) {
@@ -192,12 +200,82 @@ class SlsClient
         }
         $token = $userAccessToken !== null
             ? $this->exchangeToken($userAccessToken, $connection['audience'])['access_token']
-            : $this->serviceToken([], $connection['audience']);
+            : $this->serviceToken([], $connection['audience'], $organizationId);
 
         return $this->httpClient->request($method, rtrim($connection['api_url'], '/') . '/' . ltrim($path, '/'), $options + [
             'auth_bearer'   => $token,
             'max_redirects' => 0,
         ]);
+    }
+
+    /**
+     * Send an event to SLS (doc 09 "App → SLS"): `POST /api/webhook/cmd/receive` with this app's
+     * service token. `$tenantId` is the org's tenant in this app — SLS finds the connection by it.
+     * Safe to repeat with the same `$eventId`.
+     *
+     * @param array<string, mixed> $data
+     *
+     * @return string SLS's answer: `received`, or `duplicate` when the event was already applied
+     *
+     * @throws SlsEventException      SLS refused the event (4xx)
+     * @throws SlsUnavailableException SLS could not be reached or failed (5xx) — try again later
+     */
+    public function sendEvent(string $type, string $tenantId, array $data = [], ?string $eventId = null): string
+    {
+        $body = [
+            'event_id'    => $eventId ?? self::uuid(),
+            'type'        => $type,
+            'tenant_id'   => $tenantId,
+            'occurred_at' => (new \DateTimeImmutable())->format(\DateTimeInterface::ATOM),
+            'data'        => (object) $data,
+        ];
+        try {
+            $response = $this->httpClient->request('POST', $this->metadata->issuer() . '/api/webhook/cmd/receive', [
+                'auth_bearer'   => $this->serviceToken(),
+                'headers'       => ['Accept' => 'application/json'],
+                'json'          => $body,
+                'timeout'       => 5,
+                'max_duration'  => 15,
+                'max_redirects' => 0,
+            ]);
+            $status = $response->getStatusCode();
+            $answer = $response->toArray(false);
+        } catch (ExceptionInterface $e) {
+            throw new SlsUnavailableException('SLS did not take the event: ' . $e->getMessage(), 0, $e);
+        }
+        if ($status >= 500) {
+            throw new SlsUnavailableException(sprintf('SLS answered the event with HTTP %d.', $status));
+        }
+        if ($status !== 200) {
+            $errors = array_map(
+                static fn (mixed $e): string => is_array($e) ? (string) ($e['message'] ?? '') : (string) $e,
+                (array) ($answer['errors'] ?? []),
+            );
+            throw new SlsEventException($status, $errors);
+        }
+
+        return (string) ($answer['status'] ?? 'received');
+    }
+
+    /**
+     * An asynchronous seed job finished (doc 08): tells SLS now instead of waiting for its next
+     * status poll. Idempotent — the event id is derived from the job.
+     *
+     * @return string `received` or `duplicate`
+     */
+    public function seedCompleted(string $tenantId, SeedJob $job): string
+    {
+        return $this->sendEvent('seed.completed', $tenantId, $job->toArray(), self::uuid('seed.completed|' . $tenantId . '|' . $job->jobId));
+    }
+
+    /** A random UUID v4, or a stable UUID-shaped id derived from `$name`. */
+    private static function uuid(?string $name = null): string
+    {
+        $bytes    = $name === null ? random_bytes(16) : substr(hash('sha256', $name, true), 0, 16);
+        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($bytes), 4));
     }
 
     private function discoveryCacheKey(string $organizationId): string
