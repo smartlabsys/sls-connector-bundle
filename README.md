@@ -130,6 +130,39 @@ The back-channel logout endpoint records the revoked SLS session in the cache po
 next request, a listener ends any local session that belongs to it, so use a cache pool
 that all web nodes share.
 
+### MCP
+
+To put an MCP server behind SLS, set `endpoints.mcp` (e.g. `/mcp`) and give it its own firewall
+with the bearer challenge:
+
+```yaml
+# config/packages/security.yaml
+security:
+    firewalls:
+        mcp:
+            pattern: ^/mcp
+            stateless: true
+            access_token:
+                token_handler: Smartlabsys\SlsConnectorBundle\Security\SlsUserTokenHandler
+                failure_handler: Smartlabsys\SlsConnectorBundle\Security\SlsBearerChallenge
+            entry_point: Smartlabsys\SlsConnectorBundle\Security\SlsBearerChallenge
+    access_control:
+        - { path: ^/mcp, roles: IS_AUTHENTICATED_FULLY }
+```
+
+- **Discovery.** Without a valid token the app answers 401 with
+  `WWW-Authenticate: Bearer resource_metadata="<audience>/.well-known/oauth-protected-resource/mcp"`
+  (plus `error="invalid_token"` when a token was sent). That RFC 9728 document is served by the
+  bundle. It names SLS as the authorization server. `/.well-known/oauth-protected-resource`
+  describes the app itself (`resource` = the audience).
+- **Tokens.** MCP clients register at SLS (dynamic client registration) and ask for a token with
+  `resource=<audience><mcp path>`. SLS issues it only to users assigned to this instance in an org
+  connected to it. Its `aud` is your audience, so tokens for other apps or for SLS are refused.
+  The claims (`tenant_id`, `roles`, `scope`, `client_id`) are on the request as `_sls_claims`, as
+  on `/api`.
+- **Protocol.** The bundle doesn't implement MCP itself. Use any MCP server library, or answer
+  JSON-RPC on `POST /mcp` yourself (see the demo app's `McpController`).
+
 ## Implement
 
 Write a class for each interface; autoconfiguration wires it in. If you have two

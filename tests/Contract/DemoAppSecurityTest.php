@@ -142,6 +142,55 @@ final class DemoAppSecurityTest extends WebTestCase
         }
     }
 
+    public function testMcpProtectedResourceAndChallenge(): void
+    {
+        $client = static::createClient();
+        $this->installKeys();
+        $sub = 'sls-mcp-' . bin2hex(random_bytes(4));
+        static::getContainer()->get(JsonStore::class)->update(static function (array &$data) use ($sub): void {
+            $data['users']['u-' . $sub] = ['id' => 'u-' . $sub, 'email' => $sub . '@example.com', 'name' => null, 'sls_sub' => $sub];
+        });
+
+        foreach (['' => self::AUDIENCE, '/mcp' => self::AUDIENCE . '/mcp'] as $suffix => $resource) {
+            $client->request('GET', '/.well-known/oauth-protected-resource' . $suffix);
+            self::assertResponseIsSuccessful();
+            $metadata = json_decode((string) $client->getResponse()->getContent(), true);
+            self::assertSame($resource, $metadata['resource']);
+            self::assertSame([self::ISSUER], $metadata['authorization_servers']);
+            self::assertSame(['header'], $metadata['bearer_methods_supported']);
+        }
+        $client->request('GET', '/.well-known/oauth-protected-resource/other');
+        self::assertResponseStatusCodeSame(404);
+
+        $call = static fn (?string $token) => $client->request('POST', '/mcp', server: array_filter([
+            'CONTENT_TYPE'       => 'application/json',
+            'HTTP_AUTHORIZATION' => $token !== null ? 'Bearer ' . $token : null,
+        ]), content: json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call', 'params' => ['name' => 'whoami', 'arguments' => []]]));
+        $metadataUrl = 'resource_metadata="' . self::AUDIENCE . '/.well-known/oauth-protected-resource/mcp"';
+
+        $call(null);
+        self::assertResponseStatusCodeSame(401);
+        self::assertSame('Bearer ' . $metadataUrl, $client->getResponse()->headers->get('WWW-Authenticate'));
+
+        foreach ([
+            'garbage'   => 'not-a-jwt',
+            'wrong aud' => $this->tokens->userAccessToken(self::ISSUER, self::ISSUER . '/mcp', self::CLIENT_ID, $sub),
+        ] as $case => $token) {
+            $call($token);
+            self::assertResponseStatusCodeSame(401, $case);
+            self::assertSame('Bearer ' . $metadataUrl . ', error="invalid_token"', $client->getResponse()->headers->get('WWW-Authenticate'), $case);
+        }
+
+        $call($this->tokens->userAccessToken(self::ISSUER, self::AUDIENCE, 'mcp-client', $sub, ['tenant_id' => 't-1', 'roles' => ['demo:viewer']]));
+        self::assertResponseIsSuccessful();
+        $result = json_decode((string) $client->getResponse()->getContent(), true)['result']['structuredContent'];
+        self::assertSame(['app' => 'demo', 'email' => $sub . '@example.com', 'sls_sub' => $sub, 'tenant_id' => 't-1', 'roles' => ['demo:viewer'], 'client_id' => 'mcp-client'], $result);
+
+        // Outside the MCP path the challenge points at the app's own metadata.
+        $client->request('GET', '/api/me');
+        self::assertResponseStatusCodeSame(401);
+    }
+
     private function installKeys(): void
     {
         $file = static::getContainer()->getParameter('sls_connector.jwks_file');

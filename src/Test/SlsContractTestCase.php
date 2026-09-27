@@ -124,6 +124,34 @@ abstract class SlsContractTestCase extends WebTestCase
         self::assertSame(SlsConnectorBundle::CONTRACT_VERSION, $body['contract_version']);
     }
 
+    /** RFC 9728 metadata for the app and, when `endpoints.mcp` is set, its MCP server (doc 09 §4). */
+    public function testContractProtectedResource(): void
+    {
+        $mcp = $this->config()['endpoints']['mcp'] ?? null;
+        $resources = ['' => $this->audience()];
+        if ($mcp !== null) {
+            $resources[$mcp] = $this->audience() . $mcp;
+        }
+        foreach ($resources as $suffix => $resource) {
+            $this->client->request('GET', '/.well-known/oauth-protected-resource' . $suffix);
+            self::assertResponseIsSuccessful();
+            $metadata = $this->json();
+            self::assertSame($resource, $metadata['resource']);
+            self::assertSame([$this->issuer()], $metadata['authorization_servers']);
+        }
+        if ($mcp === null) {
+            return;
+        }
+
+        [$status] = $this->call('POST', $mcp, null, ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'ping']);
+        self::assertSame(401, $status);
+        self::assertStringContainsString(
+            'resource_metadata="' . $this->audience() . '/.well-known/oauth-protected-resource' . $mcp . '"',
+            (string) $this->client->getResponse()->headers->get('WWW-Authenticate'),
+            'Set Security\\SlsBearerChallenge as the MCP firewall\'s entry_point and failure_handler.',
+        );
+    }
+
     // ── Service authentication ───────────────────────────────────────────────
 
     public function testContractRejectsMissingOrBadTokens(): void

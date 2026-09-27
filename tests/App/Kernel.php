@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Smartlabsys\SlsConnectorBundle\Tests\App;
 
+use Smartlabsys\SlsConnectorBundle\Security\SlsBearerChallenge;
 use Smartlabsys\SlsConnectorBundle\Security\SlsOidcAuthenticator;
 use Smartlabsys\SlsConnectorBundle\Security\SlsServiceTokenHandler;
 use Smartlabsys\SlsConnectorBundle\Security\SlsUserTokenHandler;
@@ -24,6 +25,7 @@ use Symfony\Component\Routing\Loader\Configurator\RoutingConfigurator;
  * `test` env: fixed SLS settings and a local JWKS file (the contract suite writes it).
  * `dev` env: the SLS_* registration bundle from the environment (see public/index.php).
  * `dev2` env: a second app (`demo2`, own store / session cookie) to try sibling calls (doc 09).
+ * `/mcp` is a minimal MCP server (a `whoami` tool) behind SLS user tokens (doc 09 §4).
  * `DEMO_SEED_ASYNC=1` leaves seed jobs queued until `demo:seed:complete` finishes them.
  */
 final class Kernel extends BaseKernel
@@ -81,7 +83,7 @@ final class Kernel extends BaseKernel
                 'label'       => ['en' => 'Demo – basic', 'sr' => 'Demo – osnovno'],
                 'parameters'  => [['key' => 'lab_name', 'type' => 'string']],
             ]],
-            'endpoints'      => ['api' => '/api'],
+            'endpoints'      => ['api' => '/api', 'mcp' => '/mcp'],
             'api'            => ['accept_app_tokens' => true],
             'oidc'           => ['default_target_path' => '/', 'failure_path' => '/login'],
             'jwks_file'      => $test ? '%kernel.project_dir%/var/test/sls-jwks.json' : null,
@@ -100,6 +102,12 @@ final class Kernel extends BaseKernel
                     'stateless'    => true,
                     'access_token' => ['token_handler' => SlsUserTokenHandler::class],
                 ],
+                'mcp' => [
+                    'pattern'      => '^/mcp',
+                    'stateless'    => true,
+                    'access_token' => ['token_handler' => SlsUserTokenHandler::class, 'failure_handler' => SlsBearerChallenge::class],
+                    'entry_point'  => SlsBearerChallenge::class,
+                ],
                 'main' => [
                     'lazy'                  => true,
                     'custom_authenticators' => [SlsOidcAuthenticator::class],
@@ -108,7 +116,7 @@ final class Kernel extends BaseKernel
                 ],
             ],
             'access_control' => [
-                ['path' => '^/api', 'roles' => 'IS_AUTHENTICATED_FULLY'],
+                ['path' => '^/(api|mcp)', 'roles' => 'IS_AUTHENTICATED_FULLY'],
                 ['path' => '^/(account|siblings)', 'roles' => 'ROLE_USER'],
             ],
         ]);
@@ -118,6 +126,7 @@ final class Kernel extends BaseKernel
         $services->load(__NAMESPACE__ . '\\Controller\\', __DIR__ . '/src/Controller/')->tag('controller.service_arguments');
         $services->set(Store\JsonStore::class)->arg('$file', '%kernel.project_dir%/var/%kernel.environment%/store.json');
         $services->set(Controller\DemoController::class)->arg('$appKey', $key)->tag('controller.service_arguments');
+        $services->set(Controller\McpController::class)->arg('$appKey', $key)->tag('controller.service_arguments');
         $services->set(Sls\DemoSeedHandler::class)->arg('$async', '%env(bool:DEMO_SEED_ASYNC)%');
         $services->set('security.demo_login_entry_point', Security\LoginEntryPoint::class);
     }

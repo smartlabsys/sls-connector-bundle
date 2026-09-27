@@ -57,6 +57,15 @@ final class ConfigurationTest extends TestCase
         $this->load($this->config(['endpoints' => ['api' => 'api']]));
     }
 
+    public function testMcpEndpointIsCheckedLikeTheOthers(): void
+    {
+        $config = $this->load($this->config(['endpoints' => ['api' => '/api', 'mcp' => '/mcp']]))->getParameter('sls_connector.config');
+        self::assertSame(['api' => '/api', 'mcp' => '/mcp'], $config['endpoints']);
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->load($this->config(['endpoints' => ['mcp' => 'mcp']]));
+    }
+
     public function testRejectsMissingSecrets(): void
     {
         $config = $this->config();
