@@ -1,0 +1,11 @@
+{% extends 'base.html.twig' %}
+
+{% block body %}
+    <h1>Connector Demo</h1>
+    {% if error %}
+        <p class="error" id="login-error">{{ error.messageKey|trans(error.messageData, 'security') }}</p>
+    {% endif %}
+    <p><em>(local login form would be here)</em></p>
+    <p>{{ 'sls.login.or'|trans }}</p>
+    <a class="btn" id="sls-login" href="{{ sls_login_url() }}">{{ 'sls.login.button'|trans }}</a>
+{% endblock %}

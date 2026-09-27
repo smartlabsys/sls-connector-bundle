@@ -1,0 +1,16 @@
+{% extends 'base.html.twig' %}
+
+{% block body %}
+    <h1>Connector Demo</h1>
+    {% if user %}
+        <p id="signed-in">Signed in as <strong>{{ user.email }}</strong> (local id <code>{{ user.id }}</code>, SLS sub <code>{{ user.slsSub }}</code>).</p>
+        {% if sls.sid ?? null %}<p>SLS session <code>{{ sls.sid }}</code></p>{% endif %}
+        <p><a id="logout" href="{{ path('logout') }}">Log out</a></p>
+    {% else %}
+        <p id="signed-out">Not signed in. <a href="{{ path('demo_login') }}">Log in</a></p>
+    {% endif %}
+    {% if webhooks %}
+        <h2>Recent webhooks</h2>
+        <ul>{% for w in webhooks %}<li><code>{{ w.type }}</code> {{ w.event_id }}</li>{% endfor %}</ul>
+    {% endif %}
+{% endblock %}

@@ -1,0 +1,4 @@
+sls:
+    login:
+        button: 'Prijavite se preko Smartlab naloga'
+        or: 'ili'

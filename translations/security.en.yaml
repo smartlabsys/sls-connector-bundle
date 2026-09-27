@@ -1,0 +1,5 @@
+sls:
+    login:
+        expired: 'Your Smartlab sign-in took too long or was already used. Please try again.'
+        denied: 'Smartlab sign-in was cancelled or you have no access to this app.'
+        failed: 'Signing in with Smartlab failed. Please try again.'

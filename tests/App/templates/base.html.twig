@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="{{ app.request.locale }}">
+<head><link rel="icon" href="data:,">
+    <meta charset="utf-8">
+    <title>{% block title %}Connector Demo{% endblock %}</title>
+    <style>
+        body { font: 15px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; color: #1f2937; }
+        .btn { display: inline-block; padding: .6rem 1rem; border-radius: .4rem; background: #0f766e; color: #fff; text-decoration: none; }
+        .error { padding: .6rem 1rem; border-radius: .4rem; background: #fee2e2; color: #991b1b; }
+        code { background: #f3f4f6; padding: 0 .25rem; border-radius: .2rem; }
+    </style>
+</head>
+<body>
+    <p><a href="?_locale=en">EN</a> · <a href="?_locale=sr">SR</a></p>
+    {% block body %}{% endblock %}
+</body>
+</html>

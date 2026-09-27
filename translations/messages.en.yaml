@@ -1,0 +1,4 @@
+sls:
+    login:
+        button: 'Sign in with Smartlab'
+        or: 'or'

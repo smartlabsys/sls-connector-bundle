@@ -1,0 +1,5 @@
+sls:
+    login:
+        expired: 'Prijava preko Smartlab naloga je predugo trajala ili je već iskorišćena. Pokušajte ponovo.'
+        denied: 'Prijava preko Smartlab naloga je otkazana ili nemate pristup ovoj aplikaciji.'
+        failed: 'Prijava preko Smartlab naloga nije uspela. Pokušajte ponovo.'
