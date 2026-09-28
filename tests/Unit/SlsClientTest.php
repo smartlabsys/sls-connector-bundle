@@ -11,6 +11,7 @@ use Smartlabsys\SlsConnectorBundle\Client\SlsTokenException;
 use Smartlabsys\SlsConnectorBundle\Exception\SlsUnavailableException;
 use Smartlabsys\SlsConnectorBundle\Jwt\SlsMetadata;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\SeedJob;
+use Smartlabsys\SlsConnectorBundle\Scim\Model\ScimUser;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\JsonMockResponse;
@@ -150,6 +151,40 @@ final class SlsClientTest extends TestCase
         self::assertMatchesRegularExpression('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/', $first['event_id']);
         self::assertSame('seed.completed', $first['type']);
         self::assertSame(['job_id' => 'job-1', 'status' => 'succeeded', 'summary' => ['users' => 2]], array_intersect_key($first['data'], ['job_id' => 1, 'status' => 1, 'summary' => 1]));
+    }
+
+    public function testUserEvents(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['status' => 'received']),
+            new JsonMockResponse(['status' => 'resynced']),
+            new JsonMockResponse(['status' => 'received']),
+        ]);
+        $local   = new ScimUser(id: 'u1', userName: 'ana', givenName: 'Ana', email: 'ana@example.com', roles: ['qc:analyst']);
+        $managed = new ScimUser(id: 'u2', userName: 'bob', familyName: 'Bob', active: false, slsUserId: 'b8a3f0a4-5f0e-4c6a-9d53-0e5e3c1f2a11', roles: ['qc:analyst']);
+
+        self::assertSame('received', $client->userCreated('tenant-1', $local));
+        self::assertSame('resynced', $client->userUpdated('tenant-1', $managed));
+        self::assertSame('received', $client->userDeleted('tenant-1', 'u1'));
+        [$created, $updated, $deleted] = array_map(
+            static fn (array $r): array => json_decode($r['options']['body'], true),
+            $this->requestsTo('/api/webhook/cmd/receive'),
+        );
+        self::assertSame('user.created', $created['type']);
+        self::assertSame(['id' => 'u1', 'user_name' => 'ana', 'email' => 'ana@example.com', 'given_name' => 'Ana', 'active' => true], $created['data'], 'no roles for a local user');
+        self::assertSame('user.updated', $updated['type']);
+        self::assertSame(['id' => 'u2', 'user_name' => 'bob', 'family_name' => 'Bob', 'active' => false, 'sls_user_id' => 'b8a3f0a4-5f0e-4c6a-9d53-0e5e3c1f2a11', 'roles' => ['qc:analyst']], $updated['data']);
+        self::assertSame(['type' => 'user.deleted', 'data' => ['id' => 'u1']], array_intersect_key($deleted, ['type' => 1, 'data' => 1]));
+        self::assertNotSame($created['event_id'], $deleted['event_id']);
+    }
+
+    public function testUserEventNeedsId(): void
+    {
+        $client = $this->client([]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $client->userCreated('tenant-1', new ScimUser(userName: 'ana'));
     }
 
     public function testRefusedEventBecomesSlsEventException(): void

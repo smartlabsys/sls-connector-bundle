@@ -210,6 +210,7 @@ $client->connections($orgId);                                 // discovery, cach
 $client->callSibling($orgId, 'lims', 'GET', '/samples');      // as this app
 $client->callSibling($orgId, 'lims', 'GET', '/samples', [], OidcLoginFlow::accessToken($session)); // as the user
 $client->seedCompleted($tenantId, $job);                      // an async seed job finished
+$client->userCreated($tenantId, $scimUser);                   // a user was created locally
 $client->sendEvent('some.event', $tenantId, $data);           // any event SLS accepts
 ```
 
@@ -229,6 +230,32 @@ $client->sendEvent('some.event', $tenantId, $data);           // any event SLS a
 
 Report async seeds with `seedCompleted()` once the job ends. SLS also keeps polling
 `GET /seeds/{job}` as a fallback.
+
+### Reporting local users
+
+If your app lets people register or edit users locally (outside SLS), tell SLS so the org's
+Owners / Admins can see them and bring them under SLS management ("Unmanaged in <app>" on the
+connection page, then **Adopt**):
+
+```php
+$client->userCreated($tenantId, $scimUser);   // ScimUser with at least id + userName
+$client->userUpdated($tenantId, $scimUser);
+$client->userDeleted($tenantId, $appUserId);
+```
+
+- Send them **only for local changes**, never for changes SLS made through SCIM. (SLS answers an
+  echo of its own push with `duplicate`, so a mistake doesn't loop, but it costs a request.)
+- For a user SLS manages (`slsUserId` set) a local change doesn't stick: SLS compares it with
+  what it pushed and, if it differs, pushes its version again (`resynced`). A managed user deleted
+  locally is created again while SLS still assigns it.
+- The answer is `received`, `duplicate`, `resynced` or `ignored` (an `slsUserId` SLS doesn't
+  assign here). Events are rate-limited per instance (600 / minute → 429,
+  `SlsEventException`).
+- **`GET /Users` must list local users too.** SLS's nightly drift check reads the full listing
+  and records users without `slsUserId` / `externalId` as unmanaged — so an app that never sends
+  events is still covered, just a day later.
+- On **Adopt**, SLS PUTs its user onto the existing app user (same `id`), setting `slsUserId`;
+  from then on it's managed like any other.
 
 ## Contract test suite
 
@@ -275,4 +302,5 @@ APP_ENV=dev2 php -S 127.0.0.1:8091 -t tests/App/public tests/App/public/index.ph
 `/siblings` lists the org's other apps and calls their `/api/ping` as the app or as the user.
 With `DEMO_SEED_ASYNC=1`, seed jobs stay queued until
 `php tests/App/bin-console.php demo:seed:complete <tenant> <job> [--fail]` finishes them and
-sends `seed.completed` to SLS.
+sends `seed.completed` to SLS. `demo:user:create|update|delete <tenant> …` change local users and
+send `user.*` events (`--local-only` skips the event, to try the drift check).

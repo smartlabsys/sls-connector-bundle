@@ -8,6 +8,7 @@ use Psr\Cache\CacheItemPoolInterface;
 use Smartlabsys\SlsConnectorBundle\Exception\SlsUnavailableException;
 use Smartlabsys\SlsConnectorBundle\Jwt\SlsMetadata;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\SeedJob;
+use Smartlabsys\SlsConnectorBundle\Scim\Model\ScimUser;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -16,7 +17,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * App → SLS calls with this instance's OAuth client (doc 05 "App → SLS", doc 09):
  * client-credentials service tokens, the token endpoint (code exchange, token exchange), UserInfo,
  * the discovery API (which sibling apps an org is connected to), calls to those siblings and
- * events sent to SLS (`seed.completed`).
+ * events sent to SLS (`seed.completed`, `user.created|updated|deleted`).
  */
 class SlsClient
 {
@@ -216,6 +217,7 @@ class SlsClient
      * @param array<string, mixed> $data
      *
      * @return string SLS's answer: `received`, or `duplicate` when the event was already applied
+     *                (`user.*` events can also answer `resynced` or `ignored`)
      *
      * @throws SlsEventException      SLS refused the event (4xx)
      * @throws SlsUnavailableException SLS could not be reached or failed (5xx) — try again later
@@ -266,6 +268,60 @@ class SlsClient
     public function seedCompleted(string $tenantId, SeedJob $job): string
     {
         return $this->sendEvent('seed.completed', $tenantId, $job->toArray(), self::uuid('seed.completed|' . $tenantId . '|' . $job->jobId));
+    }
+
+    /**
+     * A user was created locally in this app, outside SLS (doc 07 "Inbound from apps"). SLS lists
+     * it as unmanaged for the org's Owners / Admins to adopt. Don't call it for users SLS pushed
+     * through SCIM.
+     *
+     * @return string `received`, `duplicate`, `resynced` or `ignored`
+     */
+    public function userCreated(string $tenantId, ScimUser $user): string
+    {
+        return $this->sendEvent('user.created', $tenantId, self::userData($user));
+    }
+
+    /**
+     * A user's local data changed in this app. For a user SLS manages (`slsUserId` set) SLS
+     * compares it with what it pushed and, if it differs, pushes its own version again (SLS wins).
+     *
+     * @return string `received`, `duplicate`, `resynced` or `ignored`
+     */
+    public function userUpdated(string $tenantId, ScimUser $user): string
+    {
+        return $this->sendEvent('user.updated', $tenantId, self::userData($user));
+    }
+
+    /**
+     * A user was deleted locally in this app. SLS forgets an unmanaged one; a user SLS still
+     * assigns is created again.
+     *
+     * @return string `received`, `duplicate`, `resynced` or `ignored`
+     */
+    public function userDeleted(string $tenantId, string $appUserId): string
+    {
+        return $this->sendEvent('user.deleted', $tenantId, ['id' => $appUserId]);
+    }
+
+    /** @return array<string, mixed> a `user.*` event's `data` */
+    private static function userData(ScimUser $user): array
+    {
+        if ($user->id === null || $user->id === '') {
+            throw new \InvalidArgumentException('A user event needs the user\'s id in this app.');
+        }
+
+        return array_filter([
+            'id'           => $user->id,
+            'user_name'    => $user->userName !== '' ? $user->userName : null,
+            'email'        => $user->email,
+            'given_name'   => $user->givenName,
+            'family_name'  => $user->familyName,
+            'display_name' => $user->displayName,
+            'active'       => $user->active,
+            'sls_user_id'  => $user->slsUserId,
+            'roles'        => $user->slsUserId !== null ? array_values($user->roles) : null,
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     /** A random UUID v4, or a stable UUID-shaped id derived from `$name`. */
