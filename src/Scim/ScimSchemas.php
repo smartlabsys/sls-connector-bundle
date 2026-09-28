@@ -48,7 +48,10 @@ final class ScimSchemas
             'name'             => 'User',
             'endpoint'         => '/Users',
             'schema'           => ScimUser::SCHEMA,
-            'schemaExtensions' => [['schema' => ScimUser::EXTENSION_SCHEMA, 'required' => false]],
+            'schemaExtensions' => [
+                ['schema' => ScimUser::EXTENSION_SCHEMA, 'required' => false],
+                ['schema' => ScimUser::ENTERPRISE_SCHEMA, 'required' => false],
+            ],
             'meta'             => ['resourceType' => 'ResourceType', 'location' => $base . '/ResourceTypes/User'],
         ]];
         if ($groups) {
@@ -73,6 +76,7 @@ final class ScimSchemas
                 self::attribute('userName', uniqueness: 'server', required: true),
                 self::attribute('externalId'),
                 self::attribute('displayName'),
+                self::attribute('title'),
                 self::attribute('name', 'complex', subAttributes: [self::attribute('givenName'), self::attribute('familyName')]),
                 self::attribute('emails', 'complex', multiValued: true, subAttributes: [self::attribute('value'), self::attribute('primary', 'boolean')]),
                 self::attribute('locale'),
@@ -82,6 +86,14 @@ final class ScimSchemas
                 self::attribute('slsUserId'),
                 self::attribute('roles', multiValued: true),
                 self::attribute('linked', 'boolean', mutability: 'readOnly'),
+            ]),
+            self::schema($base, ScimUser::ENTERPRISE_SCHEMA, 'Enterprise user', [
+                self::attribute('employeeNumber'),
+                self::attribute('costCenter'),
+                self::attribute('organization'),
+                self::attribute('division'),
+                self::attribute('department'),
+                self::attribute('manager', 'complex', subAttributes: [self::attribute('value'), self::attribute('displayName')]),
             ]),
         ];
         if ($groups) {

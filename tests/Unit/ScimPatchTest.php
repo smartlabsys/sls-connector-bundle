@@ -45,6 +45,33 @@ final class ScimPatchTest extends TestCase
         self::assertSame('Ana', $user->givenName);
     }
 
+    public function testEnterpriseExtensionAndTitle(): void
+    {
+        $user = ScimUser::fromScim([
+            'userName' => 'ana@example.com',
+            'title'    => 'Analyst',
+            ScimUser::ENTERPRISE_SCHEMA => ['Department' => 'QA', 'manager' => ['displayName' => 'Boss', '$ref' => 'x']],
+        ]);
+        self::assertSame('Analyst', $user->title);
+        self::assertSame(['department' => 'QA', 'manager' => ['displayName' => 'Boss']], $user->enterprise);
+
+        ScimPatch::applyToUser($user, $this->ops([
+            ['op' => 'replace', 'path' => ScimUser::ENTERPRISE_SCHEMA . ':department', 'value' => 'Lab'],
+            ['op' => 'add', 'path' => ScimUser::ENTERPRISE_SCHEMA, 'value' => ['employeeNumber' => '007']],
+            ['op' => 'remove', 'path' => ScimUser::ENTERPRISE_SCHEMA . ':manager'],
+            ['op' => 'replace', 'path' => 'title', 'value' => 'Head of QA'],
+        ]));
+        self::assertSame('Head of QA', $user->title);
+        self::assertSame(['department' => 'Lab', 'employeeNumber' => '007'], $user->enterprise);
+
+        $scim = $user->toScim('/x');
+        self::assertContains(ScimUser::ENTERPRISE_SCHEMA, $scim['schemas']);
+        self::assertSame('007', $scim[ScimUser::ENTERPRISE_SCHEMA]['employeeNumber']);
+
+        ScimPatch::applyToUser($user, $this->ops([['op' => 'remove', 'path' => ScimUser::ENTERPRISE_SCHEMA]]));
+        self::assertArrayNotHasKey(ScimUser::ENTERPRISE_SCHEMA, $user->toScim('/x'));
+    }
+
     public function testUserNameCannotBeRemoved(): void
     {
         $this->expectScimError('mutability', fn () => ScimPatch::applyToUser(new ScimUser(userName: 'a'), $this->ops([['op' => 'remove', 'path' => 'userName']])));

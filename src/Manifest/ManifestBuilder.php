@@ -8,7 +8,8 @@ use Smartlabsys\SlsConnectorBundle\SlsConnectorBundle;
 
 /**
  * Builds `/.well-known/sls-app.json` (doc 05 §1) from the bundle configuration. The six required
- * endpoints are the bundle's own fixed routes.
+ * endpoints and the optional `login` (where the SLS app launcher sends users to start sign-in) are
+ * the bundle's own fixed routes.
  */
 final class ManifestBuilder
 {
@@ -19,6 +20,7 @@ final class ManifestBuilder
         'webhooks'           => '/sls/webhooks',
         'oidc_callback'      => '/sls/oidc/callback',
         'backchannel_logout' => '/sls/oidc/backchannel-logout',
+        'login'              => '/sls/oidc/login',
     ];
 
     /** @param array<string, mixed> $config the processed `sls_connector` configuration */

@@ -132,7 +132,32 @@ final class ScimPatch
             return;
         }
 
+        $enterprise = strtolower(ScimUser::ENTERPRISE_SCHEMA);
+        if ($path === $enterprise) {
+            if ($remove) {
+                $user->enterprise = [];
+
+                return;
+            }
+            if (!is_array($value) || array_is_list($value)) {
+                throw ContractException::badRequest('The enterprise extension value must be an object.', 'invalidValue');
+            }
+            foreach ($value as $attribute => $attributeValue) {
+                $user->setEnterprise((string) $attribute, $attributeValue);
+            }
+
+            return;
+        }
+        if (str_starts_with($path, $enterprise . ':')) {
+            $user->setEnterprise(substr($path, strlen($enterprise) + 1), $remove ? null : $value);
+
+            return;
+        }
+
         switch ($path) {
+            case 'title':
+                $user->title = $remove ? null : ScimUser::string($value);
+                break;
             case 'active':
                 $user->active = $remove ? false : ScimUser::bool($value, 'active');
                 break;

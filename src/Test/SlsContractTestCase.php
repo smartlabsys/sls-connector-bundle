@@ -110,6 +110,11 @@ abstract class SlsContractTestCase extends WebTestCase
         foreach (['health', 'provisioning', 'scim', 'webhooks', 'oidc_callback', 'backchannel_logout'] as $endpoint) {
             self::assertStringStartsWith('/', $manifest['endpoints'][$endpoint] ?? '', $endpoint);
         }
+        foreach (['login', 'api', 'mcp'] as $endpoint) {
+            if (isset($manifest['endpoints'][$endpoint])) {
+                self::assertStringStartsWith('/', $manifest['endpoints'][$endpoint], $endpoint);
+            }
+        }
         foreach ($manifest['roles'] as $role) {
             self::assertStringStartsWith($manifest['app']['key'] . ':', $role['key']);
             self::assertNotEmpty($role['label']['en']);
@@ -226,6 +231,12 @@ abstract class SlsContractTestCase extends WebTestCase
         self::assertSame(204, $status);
         [$status] = $this->call('GET', '/sls/provisioning/tenants/' . $tenantId, $token);
         self::assertSame(404, $status);
+        // After a delete (an Owner's "Delete remote tenant"), connecting again makes a fresh tenant.
+        [$status, $fresh] = $this->call('POST', '/sls/provisioning/tenants', $token, $this->contractTenantRequest($orgId));
+        self::assertSame(201, $status);
+        self::assertSame('active', $fresh['status']);
+        [$status] = $this->call('DELETE', '/sls/provisioning/tenants/' . $fresh['tenant_id'], $token);
+        self::assertSame(204, $status);
     }
 
     public function testContractSeeds(): void

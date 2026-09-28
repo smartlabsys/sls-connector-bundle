@@ -11,14 +11,29 @@ use Smartlabsys\SlsConnectorBundle\Exception\ContractException;
  * `urn:smartlabsys:scim:1.0:User` (`slsUserId`, `roles`, and the read-only `linked` the app sets
  * when it attached the push to an existing local user). Mutable, so PATCH can apply operations
  * before the mapper stores it.
+ *
+ * `title` and the enterprise extension (`employeeNumber`, `costCenter`, `organization`,
+ * `division`, `department`, `manager.displayName`) are the org's directory data, sent only when
+ * the org's identity provider supplies them to SLS. Apps may store or ignore them.
  */
 final class ScimUser
 {
     public const SCHEMA           = 'urn:ietf:params:scim:schemas:core:2.0:User';
     public const EXTENSION_SCHEMA = 'urn:smartlabsys:scim:1.0:User';
+    public const ENTERPRISE_SCHEMA = 'urn:ietf:params:scim:schemas:extension:enterprise:2.0:User';
+
+    /** The enterprise extension's string attributes, by lower-cased name. */
+    public const ENTERPRISE_STRINGS = [
+        'employeenumber' => 'employeeNumber',
+        'costcenter'     => 'costCenter',
+        'organization'   => 'organization',
+        'division'       => 'division',
+        'department'     => 'department',
+    ];
 
     /**
      * @param string[] $roles app roles, e.g. ["qc:analyst"]
+     * @param array{employeeNumber?: string, costCenter?: string, organization?: string, division?: string, department?: string, manager?: array{value?: string, displayName?: string}} $enterprise
      */
     public function __construct(
         public ?string $id = null,
@@ -35,6 +50,8 @@ final class ScimUser
         public bool $linked = false,
         public ?\DateTimeInterface $created = null,
         public ?\DateTimeInterface $lastModified = null,
+        public ?string $title = null,
+        public array $enterprise = [],
     ) {}
 
     /**
@@ -50,6 +67,7 @@ final class ScimUser
         $user->externalId  = self::string($resource['externalid'] ?? null);
         $user->userName    = self::string($resource['username'] ?? null) ?? '';
         $user->displayName = self::string($resource['displayname'] ?? null);
+        $user->title       = self::string($resource['title'] ?? null);
         $user->locale      = self::string($resource['locale'] ?? null);
         $user->active      = self::bool($resource['active'] ?? true, 'active');
 
@@ -68,6 +86,14 @@ final class ScimUser
             $user->roles     = self::roles($extension['roles'] ?? []);
         }
 
+        $enterprise = $resource[strtolower(self::ENTERPRISE_SCHEMA)] ?? [];
+        if (!is_array($enterprise)) {
+            throw ContractException::badRequest('The enterprise extension must be an object.', 'invalidValue');
+        }
+        foreach ($enterprise as $attribute => $value) {
+            $user->setEnterprise((string) $attribute, $value);
+        }
+
         if ($user->userName === '') {
             throw ContractException::badRequest('"userName" is required.', 'invalidValue');
         }
@@ -79,12 +105,13 @@ final class ScimUser
     public function toScim(string $location): array
     {
         return array_filter([
-            'schemas'     => [self::SCHEMA, self::EXTENSION_SCHEMA],
+            'schemas'     => $this->enterprise !== [] ? [self::SCHEMA, self::EXTENSION_SCHEMA, self::ENTERPRISE_SCHEMA] : [self::SCHEMA, self::EXTENSION_SCHEMA],
             'id'          => $this->id,
             'externalId'  => $this->externalId,
             'userName'    => $this->userName,
             'name'        => array_filter(['givenName' => $this->givenName, 'familyName' => $this->familyName], 'is_string') ?: null,
             'displayName' => $this->displayName,
+            'title'       => $this->title,
             'emails'      => $this->email !== null ? [['value' => $this->email, 'primary' => true]] : null,
             'locale'      => $this->locale,
             'active'      => $this->active,
@@ -93,6 +120,7 @@ final class ScimUser
                 'roles'     => array_values($this->roles),
                 'linked'    => $this->linked,
             ],
+            self::ENTERPRISE_SCHEMA => $this->enterprise ?: null,
             'meta'        => array_filter([
                 'resourceType' => 'User',
                 'created'      => $this->created?->format(\DATE_ATOM),
@@ -100,6 +128,51 @@ final class ScimUser
                 'location'     => $location,
             ]),
         ], static fn ($value): bool => $value !== null);
+    }
+
+    /**
+     * Sets (null: removes) one enterprise attribute by case-insensitive name: a string attribute,
+     * `manager` (an object or the manager's id), `manager.value` / `manager.displayName`.
+     * Unknown attributes are ignored.
+     */
+    public function setEnterprise(string $attribute, mixed $value): void
+    {
+        $attribute = strtolower($attribute);
+        if (isset(self::ENTERPRISE_STRINGS[$attribute])) {
+            $this->putEnterprise(self::ENTERPRISE_STRINGS[$attribute], self::string($value));
+
+            return;
+        }
+        $manager = $this->enterprise['manager'] ?? [];
+        switch ($attribute) {
+            case 'manager':
+                if (is_array($value)) {
+                    $value   = self::lowerKeys($value);
+                    $manager = ['value' => self::string($value['value'] ?? null), 'displayName' => self::string($value['displayname'] ?? null)];
+                } else {
+                    $manager = ['value' => self::string($value)];
+                }
+                break;
+            case 'manager.value':
+                $manager['value'] = self::string($value);
+                break;
+            case 'manager.displayname':
+                $manager['displayName'] = self::string($value);
+                break;
+            default:
+                return;
+        }
+        $manager = array_filter($manager, static fn ($v): bool => $v !== null);
+        $this->putEnterprise('manager', $manager ?: null);
+    }
+
+    private function putEnterprise(string $attribute, string|array|null $value): void
+    {
+        if ($value === null) {
+            unset($this->enterprise[$attribute]);
+        } else {
+            $this->enterprise[$attribute] = $value;
+        }
     }
 
     /** @param mixed $emails */
