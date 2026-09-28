@@ -6,15 +6,15 @@ namespace Smartlabsys\SlsConnectorBundle\Tests\App\Sls;
 
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\SeedJob;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\SeedRequest;
-use Smartlabsys\SlsConnectorBundle\Provisioning\SeedHandlerInterface;
+use Smartlabsys\SlsConnectorBundle\Provisioning\CancellableSeedHandlerInterface;
 use Smartlabsys\SlsConnectorBundle\Tests\App\Store\JsonStore;
 
 /**
  * Runs seeds synchronously — the job is `succeeded` right away — or, with `DEMO_SEED_ASYNC=1`,
  * leaves it `queued` until `demo:seed:complete` finishes it and tells SLS (`seed.completed`).
- * Idempotent on the key.
+ * Idempotent on the key. A cancelled queued job ends as `failed` / `cancelled`.
  */
-final class DemoSeedHandler implements SeedHandlerInterface
+final class DemoSeedHandler implements CancellableSeedHandlerInterface
 {
     public function __construct(private JsonStore $store, private bool $async = false) {}
 
@@ -46,6 +46,21 @@ final class DemoSeedHandler implements SeedHandlerInterface
         $job = $this->store->read()['seeds'][$tenantId][$jobId] ?? null;
 
         return $job !== null ? self::job($job) : null;
+    }
+
+    public function cancel(string $tenantId, string $jobId): bool
+    {
+        return $this->store->update(static function (array &$data) use ($tenantId, $jobId): bool {
+            if (!isset($data['seeds'][$tenantId][$jobId])) {
+                return false;
+            }
+            if (in_array($data['seeds'][$tenantId][$jobId]['status'], [SeedJob::STATUS_QUEUED, SeedJob::STATUS_RUNNING], true)) {
+                $data['seeds'][$tenantId][$jobId]['status'] = SeedJob::STATUS_FAILED;
+                $data['seeds'][$tenantId][$jobId]['error']  = 'cancelled';
+            }
+
+            return true;
+        });
     }
 
     /** Finish a queued job (`demo:seed:complete`); null if unknown. */

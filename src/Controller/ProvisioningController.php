@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Smartlabsys\SlsConnectorBundle\Controller;
 
 use Smartlabsys\SlsConnectorBundle\Exception\ContractException;
+use Smartlabsys\SlsConnectorBundle\Provisioning\CancellableSeedHandlerInterface;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\SeedRequest;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\Tenant;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\TenantRequest;
@@ -161,6 +162,23 @@ final class ProvisioningController
             }
 
             return new JsonResponse($job->toArray());
+        });
+    }
+
+    #[Route('/{tenantId}/seeds/{jobId}', name: 'seed_cancel', methods: ['DELETE'])]
+    public function seedCancel(Request $request, string $tenantId, string $jobId): JsonResponse
+    {
+        return $this->handle(function () use ($request, $tenantId, $jobId): JsonResponse {
+            $this->guard->require($request, self::SCOPE, $tenantId);
+            $handler = $this->seedHandler();
+            if (!$handler instanceof CancellableSeedHandlerInterface) {
+                throw ContractException::notImplemented('This app does not cancel seed jobs.');
+            }
+            if (!$handler->cancel($tenantId, $jobId)) {
+                throw ContractException::notFound('job_not_found', 'Unknown seed job.');
+            }
+
+            return new JsonResponse(null, 204);
         });
     }
 

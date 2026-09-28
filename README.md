@@ -66,7 +66,18 @@ sls_connector:
     roles:                                   # keys must start with "<app key>:"
         - { key: 'qc:analyst', label: { en: Analyst, sr: Analitičar } }
     seed_templates:
-        - { key: food-lab-basic, version: 3, label: { en: 'Food lab – basic' }, parameters: [] }
+        - key: food-lab-basic
+          version: 3
+          label: { en: 'Food lab – basic', sr: 'Laboratorija za hranu – osnovno' }
+          parameters:                        # string | choice | integer | boolean; texts localized like labels
+            - { key: lab_name, type: string, required: true, label: { en: Lab name, sr: Naziv laboratorije } }
+            - key: sample_set
+              type: choice
+              choices: [food, water]
+              default: food
+              label: { en: Sample types, sr: Vrste uzoraka }
+              description: { en: Which sample types to create. }   # optional help text
+              choice_labels: { food: { en: Food, sr: Hrana }, water: { en: Water, sr: Voda } }
     events: { emits: [], consumes: [] }
     endpoints: { api: /api, mcp: null }      # optional manifest endpoints
     api:
@@ -173,6 +184,7 @@ implementations of one interface, alias the interface to the one you want.
 | `Security\SlsUserResolverInterface` | SSO, user tokens | `resolveOidcUser(SlsIdentity)`: link by SLS `sub` → verified email → create. `loadBySlsUserId()` for API tokens. |
 | `Provisioning\TenantProvisionerInterface` | provisioning | `create()` is idempotent on `sls_org_id` (201 new / 200 existing). A dedicated install returns its one tenant. |
 | `Provisioning\SeedHandlerInterface` | seed templates (optional) | `start()` queues the work and returns a `SeedJob`. The endpoint answers 202. |
+| `Provisioning\CancellableSeedHandlerInterface` | cancelling seeds (optional) | Extends the seed handler with `cancel()`: stop a queued / running job (`DELETE …/seeds/{job}` → 204, unknown job → 404). Without it the endpoint answers 501 and SLS just stops tracking the job. |
 | `Scim\ScimUserMapperInterface` | SCIM users | CRUD on `ScimUser`. Throw `ContractException::conflict(…, 'uniqueness')` for a duplicate `userName`. |
 | `Scim\ScimGroupMapperInterface` | SCIM groups (optional) | Without it, `/Groups` answers 501. |
 | `Health\HealthCheckInterface` | health (optional) | Any failing check reports the instance as `degraded`. |

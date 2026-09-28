@@ -79,9 +79,23 @@ final class Kernel extends BaseKernel
             ],
             'seed_templates' => [[
                 'key'         => 'demo-basic',
-                'version'     => 2,
+                'version'     => 3,
                 'label'       => ['en' => 'Demo – basic', 'sr' => 'Demo – osnovno'],
-                'parameters'  => [['key' => 'lab_name', 'type' => 'string']],
+                'parameters'  => [
+                    ['key' => 'lab_name', 'type' => 'string', 'label' => ['en' => 'Lab name', 'sr' => 'Naziv laboratorije']],
+                    [
+                        'key'           => 'sample_set',
+                        'type'          => 'choice',
+                        'choices'       => ['food', 'water'],
+                        'default'       => 'food',
+                        'label'         => ['en' => 'Sample types', 'sr' => 'Vrste uzoraka'],
+                        'description'   => ['en' => 'Which sample types to create.', 'sr' => 'Koje vrste uzoraka se kreiraju.'],
+                        'choice_labels' => [
+                            'food'  => ['en' => 'Food', 'sr' => 'Hrana'],
+                            'water' => ['en' => 'Water', 'sr' => 'Voda'],
+                        ],
+                    ],
+                ],
             ]],
             'endpoints'      => ['api' => '/api', 'mcp' => '/mcp'],
             'api'            => ['accept_app_tokens' => true],

@@ -262,6 +262,14 @@ abstract class SlsContractTestCase extends WebTestCase
 
         [$status] = $this->call('GET', $url . '/no-such-job', $token);
         self::assertSame(404, $status);
+
+        // Cancelling is optional: 501 without it; with it, 204 (a finished job too) / 404.
+        [$status] = $this->call('DELETE', $url . '/' . $job['job_id'], $token);
+        self::assertContains($status, [204, 501]);
+        if ($status === 204) {
+            [$status] = $this->call('DELETE', $url . '/no-such-job', $token);
+            self::assertSame(404, $status);
+        }
     }
 
     // ── SCIM ─────────────────────────────────────────────────────────────────
