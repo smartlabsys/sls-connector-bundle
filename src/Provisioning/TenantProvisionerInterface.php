@@ -14,7 +14,12 @@ use Smartlabsys\SlsConnectorBundle\Provisioning\Model\TenantResult;
  */
 interface TenantProvisionerInterface
 {
-    /** Idempotent on `slsOrganizationId`: an org that already has a tenant gets it back (`created` false). */
+    /**
+     * Idempotent on `slsOrganizationId`: an org that already has a tenant gets it back (`created` false).
+     * Otherwise, when `claimOwnerEmail` is set, the app may link an existing tenant that is not yet
+     * linked to any SLS org and where a user with that e-mail is an owner (`created` true), instead
+     * of creating a duplicate.
+     */
     public function create(TenantRequest $request): TenantResult;
 
     public function get(string $tenantId): ?Tenant;

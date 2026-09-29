@@ -10,6 +10,7 @@ use Smartlabsys\SlsConnectorBundle\Provisioning\Model\SeedRequest;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\Tenant;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\TenantRequest;
 use Smartlabsys\SlsConnectorBundle\Provisioning\SeedHandlerInterface;
+use Smartlabsys\SlsConnectorBundle\Provisioning\TenantPreviewInterface;
 use Smartlabsys\SlsConnectorBundle\Provisioning\TenantProvisionerInterface;
 use Smartlabsys\SlsConnectorBundle\Security\ServiceRequestGuard;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -41,26 +42,23 @@ final class ProvisioningController
     {
         return $this->handle(function () use ($request): JsonResponse {
             $this->guard->require($request, self::SCOPE);
-            $body = $this->jsonBody($request);
-
-            $orgId = $body['sls_org_id'] ?? null;
-            $org   = $body['organization'] ?? null;
-            if (!is_string($orgId) || trim($orgId) === '') {
-                throw ContractException::badRequest('"sls_org_id" is required.');
-            }
-            if (!is_array($org) || !is_string($org['name'] ?? null) || trim($org['name']) === '') {
-                throw ContractException::badRequest('"organization.name" is required.');
-            }
-
-            $result = $this->provisioner()->create(new TenantRequest(
-                trim($orgId),
-                trim($org['name']),
-                self::optionalString($org['slug'] ?? null),
-                self::optionalString($org['locale'] ?? null),
-                $body,
-            ));
+            $result = $this->provisioner()->create($this->tenantRequest($request));
 
             return new JsonResponse($result->tenant->toArray(), $result->created ? 201 : 200);
+        });
+    }
+
+    #[Route('/preview', name: 'preview', methods: ['POST'])]
+    public function preview(Request $request): JsonResponse
+    {
+        return $this->handle(function () use ($request): JsonResponse {
+            $this->guard->require($request, self::SCOPE);
+            $provisioner = $this->provisioner();
+            if (!$provisioner instanceof TenantPreviewInterface) {
+                throw ContractException::notImplemented('This app does not preview tenants.');
+            }
+
+            return new JsonResponse($provisioner->preview($this->tenantRequest($request))->toArray());
         });
     }
 
@@ -180,6 +178,30 @@ final class ProvisioningController
 
             return new JsonResponse(null, 204);
         });
+    }
+
+    /** The body of `POST /tenants` and `POST /tenants/preview`. */
+    private function tenantRequest(Request $request): TenantRequest
+    {
+        $body = $this->jsonBody($request);
+
+        $orgId = $body['sls_org_id'] ?? null;
+        $org   = $body['organization'] ?? null;
+        if (!is_string($orgId) || trim($orgId) === '') {
+            throw ContractException::badRequest('"sls_org_id" is required.');
+        }
+        if (!is_array($org) || !is_string($org['name'] ?? null) || trim($org['name']) === '') {
+            throw ContractException::badRequest('"organization.name" is required.');
+        }
+
+        return new TenantRequest(
+            trim($orgId),
+            trim($org['name']),
+            self::optionalString($org['slug'] ?? null),
+            self::optionalString($org['locale'] ?? null),
+            $body,
+            is_array($body['claim'] ?? null) ? self::optionalString($body['claim']['owner_email'] ?? null) : null,
+        );
     }
 
     private function provisioner(): TenantProvisionerInterface

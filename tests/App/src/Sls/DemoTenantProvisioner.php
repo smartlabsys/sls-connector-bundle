@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Smartlabsys\SlsConnectorBundle\Tests\App\Sls;
 
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\Tenant;
+use Smartlabsys\SlsConnectorBundle\Provisioning\Model\TenantPreview;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\TenantRequest;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\TenantResult;
+use Smartlabsys\SlsConnectorBundle\Provisioning\TenantPreviewInterface;
 use Smartlabsys\SlsConnectorBundle\Provisioning\TenantProvisionerInterface;
 use Smartlabsys\SlsConnectorBundle\Tests\App\Store\JsonStore;
 
-final class DemoTenantProvisioner implements TenantProvisionerInterface
+final class DemoTenantProvisioner implements TenantProvisionerInterface, TenantPreviewInterface
 {
     public function __construct(private JsonStore $store) {}
 
@@ -27,6 +29,17 @@ final class DemoTenantProvisioner implements TenantProvisionerInterface
 
             return new TenantResult(self::tenant($data['tenants'][$id]), true);
         });
+    }
+
+    public function preview(TenantRequest $request): TenantPreview
+    {
+        foreach ($this->store->read()['tenants'] ?? [] as $row) {
+            if ($row['sls_org_id'] === $request->slsOrganizationId) {
+                return new TenantPreview(TenantPreview::ACTION_EXISTING, self::tenant($row));
+            }
+        }
+
+        return new TenantPreview(TenantPreview::ACTION_CREATE);
     }
 
     public function get(string $tenantId): ?Tenant

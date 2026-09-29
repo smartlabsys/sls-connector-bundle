@@ -239,6 +239,36 @@ abstract class SlsContractTestCase extends WebTestCase
         self::assertSame(204, $status);
     }
 
+    public function testContractTenantPreview(): void
+    {
+        $token = $this->serviceToken(['sls:provision']);
+        $orgId = $this->uid();
+
+        [$status, $body] = $this->call('POST', '/sls/provisioning/tenants/preview', $token, $this->contractTenantRequest($orgId));
+        if ($status === 501) {
+            self::markTestSkipped('The app does not preview tenants.');
+        }
+        self::assertSame(200, $status);
+        self::assertSame('create', $body['action'], 'A new org without a claim gets a new tenant.');
+        self::assertNull($body['tenant']);
+
+        [$status, $created] = $this->call('POST', '/sls/provisioning/tenants', $token, $this->contractTenantRequest($orgId));
+        self::assertSame(201, $status, 'Previewing must not create the tenant.');
+
+        [$status, $body] = $this->call('POST', '/sls/provisioning/tenants/preview', $token, $this->contractTenantRequest($orgId));
+        self::assertSame(200, $status);
+        self::assertSame('existing', $body['action']);
+        self::assertSame($created['tenant_id'], $body['tenant']['tenant_id']);
+
+        [$status] = $this->call('POST', '/sls/provisioning/tenants/preview', $token, ['organization' => ['name' => 'x']]);
+        self::assertSame(400, $status);
+        [$status] = $this->call('POST', '/sls/provisioning/tenants/preview', $this->serviceToken(['sls:health']), $this->contractTenantRequest($orgId));
+        self::assertSame(403, $status);
+
+        [$status] = $this->call('DELETE', '/sls/provisioning/tenants/' . $created['tenant_id'], $token);
+        self::assertSame(204, $status);
+    }
+
     public function testContractSeeds(): void
     {
         if (!$this->contractSupportsSeeds()) {

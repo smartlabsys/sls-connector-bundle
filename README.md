@@ -182,7 +182,8 @@ implementations of one interface, alias the interface to the one you want.
 | Interface | Required for | Notes |
 |---|---|---|
 | `Security\SlsUserResolverInterface` | SSO, user tokens | `resolveOidcUser(SlsIdentity)`: link by SLS `sub` → verified email → create. `loadBySlsUserId()` for API tokens. |
-| `Provisioning\TenantProvisionerInterface` | provisioning | `create()` is idempotent on `sls_org_id` (201 new / 200 existing). A dedicated install returns its one tenant. |
+| `Provisioning\TenantProvisionerInterface` | provisioning | `create()` is idempotent on `sls_org_id` (201 new / 200 existing). A dedicated install returns its one tenant. `TenantRequest::$claimOwnerEmail` (the connecting user's verified e-mail) lets you link an existing, not-yet-linked tenant that user owns instead of creating a duplicate (201). |
+| `Provisioning\TenantPreviewInterface` | tenant preview (optional) | `preview()` answers `POST /tenants/preview`: what `create()` would do for the same request (`existing` / `claim` / `create`, with the tenant for the first two) without writing anything. SLS's connect wizard shows it ("your existing company will be linked"). Without it the endpoint answers 501 and SLS shows a neutral message. Implement it on your provisioner with the same lookup `create()` uses. |
 | `Provisioning\SeedHandlerInterface` | seed templates (optional) | `start()` queues the work and returns a `SeedJob`. The endpoint answers 202. |
 | `Provisioning\CancellableSeedHandlerInterface` | cancelling seeds (optional) | Extends the seed handler with `cancel()`: stop a queued / running job (`DELETE …/seeds/{job}` → 204, unknown job → 404). Without it the endpoint answers 501 and SLS just stops tracking the job. |
 | `Scim\ScimUserMapperInterface` | SCIM users | CRUD on `ScimUser`. Throw `ContractException::conflict(…, 'uniqueness')` for a duplicate `userName`. |
