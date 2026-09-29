@@ -24,9 +24,12 @@ Requirements: PHP ≥ 8.2 and Symfony 7.4 (framework, security, http-client, cac
 ## Install
 
 ```bash
-composer config repositories.sls-connector path ../sls-connector-bundle   # until it is on a registry
-composer require smartlabsys/sls-connector-bundle
+composer config repositories.sls-connector vcs https://github.com/smartlabsys/sls-connector-bundle
+composer require smartlabsys/sls-connector-bundle:^0.1
 ```
+
+To work on the bundle and an app side by side, point the app at a local checkout instead
+(`composer config repositories.sls-connector path ../sls-connector-bundle`) — just don't commit that.
 
 ```php
 // config/bundles.php
