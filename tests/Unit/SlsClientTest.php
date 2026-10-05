@@ -105,6 +105,27 @@ final class SlsClientTest extends TestCase
         self::assertStringContainsString('org_id=org-1', $body);
     }
 
+    public function testCallSiblingPicksTheInstance(): void
+    {
+        $one = ['app' => 'lims', 'instance_id' => 'i1', 'instance_name' => 'LIMS', 'tenant_id' => 't1', 'api_url' => 'https://lims.test/api', 'mcp_url' => null, 'audience' => 'https://lims.test', 'status' => 'active'];
+        $two = ['app' => 'lims', 'instance_id' => 'i2', 'instance_name' => 'LIMS 2', 'tenant_id' => 't2', 'api_url' => 'https://lims2.test/api', 'mcp_url' => null, 'audience' => 'https://lims2.test', 'status' => 'active'];
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [$one, $two]]),
+            new JsonMockResponse(['access_token' => 'for-lims2', 'expires_in' => 300]),
+            new JsonMockResponse(['ok' => true]),
+        ]);
+
+        self::assertSame($one, $client->connection('org-1', 'lims'), 'the first one without an instance');
+        self::assertSame($two, $client->connection('org-1', 'lims', 'i2'));
+        self::assertNull($client->connection('org-1', 'lims', 'i3'));
+
+        $client->callSibling('org-1', 'lims', 'GET', '/samples', instanceId: 'i2');
+        $last = end($this->requests);
+        self::assertSame('https://lims2.test/api/samples', $last['url']);
+        self::assertStringContainsString('resource=' . rawurlencode('https://lims2.test'), $this->requestsTo('/oauth2/token')[1]['options']['body']);
+    }
+
     public function testSiblingServiceTokenNeedsOrganization(): void
     {
         $client = $this->client([]);

@@ -137,7 +137,7 @@ class SlsClient
      * The org's connected app instances (doc 09 §1), cached for 5 minutes and dropped on
      * `connection.*` webhooks.
      *
-     * @return list<array{app: string, instance_id: string, tenant_id: ?string, api_url: ?string, mcp_url: ?string, audience: string, status: string}>
+     * @return list<array{app: string, instance_id: string, instance_name?: string, tenant_id: ?string, api_url: ?string, mcp_url: ?string, audience: string, status: string}>
      */
     public function connections(string $organizationId, bool $refresh = false): array
     {
@@ -164,11 +164,17 @@ class SlsClient
         return $items;
     }
 
-    /** @return array<string, mixed>|null the org's active connection to the app with this key */
-    public function connection(string $organizationId, string $appKey): ?array
+    /**
+     * The org's active connection to the app with this key: the given instance, or the first one
+     * when the org is connected to several instances of the app and `$instanceId` is null.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function connection(string $organizationId, string $appKey, ?string $instanceId = null): ?array
     {
         foreach ($this->connections($organizationId) as $connection) {
-            if (($connection['app'] ?? null) === $appKey && ($connection['status'] ?? null) === 'active') {
+            if (($connection['app'] ?? null) === $appKey && ($connection['status'] ?? null) === 'active'
+                && ($instanceId === null || ($connection['instance_id'] ?? null) === $instanceId)) {
                 return $connection;
             }
         }
@@ -184,6 +190,7 @@ class SlsClient
     /**
      * Call a sibling app's API (doc 09 §2): as this app (service token for the sibling's
      * audience), or on behalf of a user when `$userAccessToken` is given (token exchange).
+     * `$instanceId` picks one instance when the org is connected to several of the app.
      *
      * @param array<string, mixed> $options Symfony HttpClient options
      */
@@ -194,10 +201,11 @@ class SlsClient
         string $path,
         array $options = [],
         #[\SensitiveParameter] ?string $userAccessToken = null,
+        ?string $instanceId = null,
     ): ResponseInterface {
-        $connection = $this->connection($organizationId, $appKey);
+        $connection = $this->connection($organizationId, $appKey, $instanceId);
         if ($connection === null || !is_string($connection['api_url'] ?? null)) {
-            throw new SlsUnavailableException(sprintf('The organization has no active "%s" connection with an API.', $appKey));
+            throw new SlsUnavailableException(sprintf('The organization has no active "%s" connection%s with an API.', $appKey, $instanceId === null ? '' : ' to instance ' . $instanceId));
         }
         $token = $userAccessToken !== null
             ? $this->exchangeToken($userAccessToken, $connection['audience'])['access_token']

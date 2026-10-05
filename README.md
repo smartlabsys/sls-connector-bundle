@@ -225,6 +225,7 @@ $client->serviceToken(['sls:read']);                          // client credenti
 $client->connections($orgId);                                 // discovery, cached 5 min
 $client->callSibling($orgId, 'lims', 'GET', '/samples');      // as this app
 $client->callSibling($orgId, 'lims', 'GET', '/samples', [], OidcLoginFlow::accessToken($session)); // as the user
+$client->callSibling($orgId, 'lims', 'GET', '/samples', instanceId: $instanceId); // one of several LIMS instances
 $client->seedCompleted($tenantId, $job);                      // an async seed job finished
 $client->userCreated($tenantId, $scimUser);                   // a user was created locally
 $client->sendEvent('some.event', $tenantId, $data);           // any event SLS accepts
