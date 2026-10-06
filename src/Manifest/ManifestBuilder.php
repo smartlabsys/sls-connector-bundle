@@ -56,6 +56,17 @@ final class ManifestBuilder
                 'description' => $template['description'] ?: null,
                 'parameters'  => $template['parameters'] ?: null,
             ]), $this->config['seed_templates']),
+            'integration'      => [
+                'provides' => array_map(static fn (array $provided): array => array_filter([
+                    'scope'       => $provided['scope'],
+                    'label'       => $provided['label'],
+                    'description' => $provided['description'] ?: null,
+                ]), $this->config['integration']['provides']),
+                'uses'     => array_map(static fn (array $used): array => [
+                    'app'    => $used['app'],
+                    'scopes' => array_values($used['scopes']),
+                ], $this->config['integration']['uses']),
+            ],
             'events'           => [
                 'emits'    => array_values($this->config['events']['emits']),
                 'consumes' => array_values($this->config['events']['consumes']),

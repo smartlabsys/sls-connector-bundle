@@ -1058,6 +1058,17 @@ use Symfony\Component\Config\Loader\ParamConfigurator as Param;
  *         emits?: list<scalar|Param|null>,
  *         consumes?: list<scalar|Param|null>,
  *     },
+ *     integration?: array{ // App links (doc 09): scopes this app offers its siblings, and the siblings' scopes it calls with.
+ *         provides?: list<array{ // Default: []
+ *             scope?: scalar|Param|null,
+ *             label?: array<string, scalar|Param|null>,
+ *             description?: array<string, scalar|Param|null>,
+ *         }>,
+ *         uses?: list<array{ // Default: []
+ *             app?: scalar|Param|null,
+ *             scopes?: list<scalar|Param|null>,
+ *         }>,
+ *     },
  *     endpoints?: array{ // The optional manifest endpoints — absolute paths on this app, or null.
  *         api?: scalar|Param|null, // Default: null
  *         mcp?: scalar|Param|null, // Default: null

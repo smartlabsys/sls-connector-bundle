@@ -82,6 +82,11 @@ sls_connector:
               description: { en: Which sample types to create. }   # optional help text
               choice_labels: { food: { en: Food, sr: Hrana }, water: { en: Water, sr: Voda } }
     events: { emits: [], consumes: [] }
+    integration:                             # app links (doc 09) — optional
+        provides:                            # what siblings may be allowed to do here
+            - { scope: 'qc:requests.read', label: { en: Read requests, sr: Čitanje zahteva } }
+        uses:                                # siblings' scopes this app calls with
+            - { app: lims, scopes: ['lims:requests.write'] }
     endpoints: { api: /api, mcp: null }      # optional manifest endpoints
     api:
         accept_app_tokens: false             # let sibling apps call your API as themselves
@@ -97,7 +102,8 @@ sls_connector:
 
 The configuration is validated when the container is built. The rules match the ones SLS
 applies to manifests: the app key must match `^[a-z][a-z0-9_-]{1,31}$`, role keys must carry the
-app prefix, labels need an `en` entry, and endpoints must be absolute paths.
+app prefix, labels need an `en` entry, and endpoints must be absolute paths. Scopes look like
+`<app>:<resource>.<action>`: provided ones carry this app's key, used ones the sibling's.
 
 After deploying, run `bin/console sls:connector:warmup`. It fetches and caches SLS's discovery
 document and JWKS, so the first token validation doesn't have to call SLS.
@@ -139,6 +145,18 @@ With `api.accept_app_tokens: true`, a sibling app's own token (`sub` = its `clie
 the `api` firewall as a `Security\SlsAppUser` (`ROLE_SLS_APP`, with `app`, `instanceId`,
 `organizationId` and `tenantId`). Otherwise such tokens are refused. SLS service tokens are
 always refused there.
+
+**App-link scopes.** The token carries the scopes the org's app link grants the caller (all the
+ones it `uses` that you `provide`, minus any an org admin took away). Guard sibling endpoints with
+them:
+
+```php
+#[IsGranted('SLS_SCOPE:qc:requests.read')]
+```
+
+`SLS_SCOPE:` checks an `SlsAppUser`'s scopes, or the claims of a user token a sibling exchanged
+for this app. A session login never has them, so don't put it on the app's own pages. While the
+apps declare no scopes for each other, SLS still lets the call through without any, as before.
 
 The back-channel logout endpoint records the revoked SLS session in the cache pool. On the
 next request, a listener ends any local session that belongs to it, so use a cache pool
@@ -233,7 +251,8 @@ $client->sendEvent('some.event', $tenantId, $data);           // any event SLS a
 
 - **As this app**, the sibling gets a token with `aud` = the sibling, `sub` = your client id and
   `tenant_id` = the org's tenant *there*. SLS issues it only while both apps are connected to the
-  org.
+  org, and refuses it (`invalid_target`) once an org admin switches the app link off. The token
+  gets every scope the link grants; the cached token keeps them until it expires (≤ 15 min).
 - **As the user**, SLS swaps the user's access token (RFC 8693 token exchange). The new token
   carries the user's roles in the sibling, `tenant_id` there, and `act: {sub, app, instance_id}`
   naming your app. SLS refuses it if the user isn't assigned to the sibling.

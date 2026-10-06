@@ -97,6 +97,13 @@ final class Kernel extends BaseKernel
                     ],
                 ],
             ]],
+            'integration'    => [
+                'provides' => [
+                    ['scope' => $key . ':orders.read', 'label' => ['en' => 'Read orders', 'sr' => 'Čitanje porudžbina']],
+                    ['scope' => $key . ':orders.write', 'label' => ['en' => 'Change orders', 'sr' => 'Izmena porudžbina'], 'description' => ['en' => 'Create and update orders.', 'sr' => 'Kreiranje i izmena porudžbina.']],
+                ],
+                'uses'     => [['app' => $sibling = $key === 'demo' ? 'demo2' : 'demo', 'scopes' => [$sibling . ':orders.read', $sibling . ':orders.write']]],
+            ],
             'endpoints'      => ['api' => '/api', 'mcp' => '/mcp'],
             'api'            => ['accept_app_tokens' => true],
             'oidc'           => ['default_target_path' => '/', 'failure_path' => '/login'],

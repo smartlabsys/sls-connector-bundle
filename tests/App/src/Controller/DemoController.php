@@ -105,7 +105,7 @@ final class DemoController
         $caller = $this->security->getUser();
         $claims = $request->attributes->get(SlsUserTokenHandler::CLAIMS_ATTRIBUTE, []);
         if ($caller instanceof SlsAppUser) {
-            return new JsonResponse(['app' => $this->appKey, 'caller' => 'app', 'client_id' => $caller->clientId, 'from' => $caller->app, 'tenant_id' => $caller->tenantId]);
+            return new JsonResponse(['app' => $this->appKey, 'caller' => 'app', 'client_id' => $caller->clientId, 'from' => $caller->app, 'tenant_id' => $caller->tenantId, 'scopes' => $caller->scopes]);
         }
 
         return new JsonResponse([
@@ -115,7 +115,19 @@ final class DemoController
             'roles'     => $claims['roles'] ?? [],
             'tenant_id' => $claims['tenant_id'] ?? null,
             'act'       => $claims['act'] ?? null,
+            'scope'     => $claims['scope'] ?? null,
         ]);
+    }
+
+    /** An endpoint behind an app-link scope (doc 09): 403 unless the token carries `{app}:orders.read`. */
+    #[Route('/api/orders', name: 'demo_api_orders', methods: ['GET'])]
+    public function orders(): JsonResponse
+    {
+        if (!$this->security->isGranted('SLS_SCOPE:' . $this->appKey . ':orders.read')) {
+            return new JsonResponse(['error' => 'insufficient_scope'], Response::HTTP_FORBIDDEN);
+        }
+
+        return new JsonResponse(['app' => $this->appKey, 'orders' => []]);
     }
 
     #[Route('/api/me', name: 'demo_api_me', methods: ['GET'])]

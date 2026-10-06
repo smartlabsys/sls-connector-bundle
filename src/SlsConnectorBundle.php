@@ -94,6 +94,29 @@ final class SlsConnectorBundle extends AbstractBundle
                         ->arrayNode('consumes')->scalarPrototype()->end()->end()
                     ->end()
                 ->end()
+                ->arrayNode('integration')
+                    ->info('App links (doc 09): scopes this app offers its siblings, and the siblings\' scopes it calls with.')
+                    ->addDefaultsIfNotSet()
+                    ->children()
+                        ->arrayNode('provides')
+                            ->arrayPrototype()
+                                ->children()
+                                    ->scalarNode('scope')->isRequired()->cannotBeEmpty()->end()
+                                    ->append($this->labelNode('label', true))
+                                    ->append($this->labelNode('description', false))
+                                ->end()
+                            ->end()
+                        ->end()
+                        ->arrayNode('uses')
+                            ->arrayPrototype()
+                                ->children()
+                                    ->scalarNode('app')->isRequired()->cannotBeEmpty()->end()
+                                    ->arrayNode('scopes')->isRequired()->requiresAtLeastOneElement()->scalarPrototype()->end()->end()
+                                ->end()
+                            ->end()
+                        ->end()
+                    ->end()
+                ->end()
                 ->arrayNode('endpoints')
                     ->addDefaultsIfNotSet()
                     ->info('The optional manifest endpoints — absolute paths on this app, or null.')
@@ -127,6 +150,21 @@ final class SlsConnectorBundle extends AbstractBundle
                     foreach ($config['roles'] as $role) {
                         if (!str_starts_with($role['key'], $prefix)) {
                             throw new \InvalidArgumentException(sprintf('Role key "%s" must start with "%s".', $role['key'], $prefix));
+                        }
+                    }
+                    foreach ($config['integration']['provides'] as $provided) {
+                        if (!self::isScope($provided['scope'], $config['app']['key'])) {
+                            throw new \InvalidArgumentException(sprintf('Provided scope "%s" must look like "%sresource.action".', $provided['scope'], $prefix));
+                        }
+                    }
+                    foreach ($config['integration']['uses'] as $used) {
+                        if (!preg_match(self::APP_KEY_PATTERN, $used['app']) || $used['app'] === $config['app']['key']) {
+                            throw new \InvalidArgumentException(sprintf('"%s" is not a sibling app key.', $used['app']));
+                        }
+                        foreach ($used['scopes'] as $scope) {
+                            if (!self::isScope($scope, $used['app'])) {
+                                throw new \InvalidArgumentException(sprintf('Used scope "%s" must look like "%s:resource.action".', $scope, $used['app']));
+                            }
                         }
                     }
                     foreach ($config['endpoints'] as $name => $path) {
@@ -173,6 +211,12 @@ final class SlsConnectorBundle extends AbstractBundle
     public function getPath(): string
     {
         return \dirname(__DIR__);
+    }
+
+    /** `<appKey>:<resource>.<action>`, the shape SLS accepts (doc 05 `integration`). */
+    private static function isScope(string $scope, string $appKey): bool
+    {
+        return (bool) preg_match('/^' . preg_quote($appKey, '/') . ':[a-z0-9][a-z0-9_-]{0,31}(\.[a-z0-9][a-z0-9_-]{0,31}){1,2}$/', $scope);
     }
 
     private function labelNode(string $name, bool $required): ArrayNodeDefinition

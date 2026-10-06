@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Smartlabsys\SlsConnectorBundle\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Smartlabsys\SlsConnectorBundle\Manifest\ManifestBuilder;
 use Smartlabsys\SlsConnectorBundle\Provisioning\TenantProvisionerInterface;
 use Smartlabsys\SlsConnectorBundle\SlsConnectorBundle;
 use Symfony\Component\Config\Definition\Exception\InvalidConfigurationException;
@@ -72,6 +73,49 @@ final class ConfigurationTest extends TestCase
         unset($config['webhook_secret']);
         $this->expectException(InvalidConfigurationException::class);
         $this->load($config);
+    }
+
+    public function testIntegrationIsEmptyByDefaultAndReachesTheManifest(): void
+    {
+        $config = $this->load($this->config())->getParameter('sls_connector.config');
+        self::assertSame(['provides' => [], 'uses' => []], $config['integration']);
+
+        $config = $this->load($this->config(['integration' => [
+            'provides' => [['scope' => 'demo:orders.read', 'label' => ['en' => 'Read orders']]],
+            'uses'     => [['app' => 'qc', 'scopes' => ['qc:requests.write']]],
+        ]]))->getParameter('sls_connector.config');
+        $manifest = (new ManifestBuilder($config))->build();
+        self::assertSame([
+            'provides' => [['scope' => 'demo:orders.read', 'label' => ['en' => 'Read orders']]],
+            'uses'     => [['app' => 'qc', 'scopes' => ['qc:requests.write']]],
+        ], $manifest['integration']);
+    }
+
+    public function testRejectsProvidedScopeOfAnotherApp(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('Provided scope "qc:orders.read"');
+        $this->load($this->config(['integration' => ['provides' => [['scope' => 'qc:orders.read', 'label' => ['en' => 'Read']]]]]));
+    }
+
+    public function testRejectsProvidedScopeWithoutAction(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->load($this->config(['integration' => ['provides' => [['scope' => 'demo:orders', 'label' => ['en' => 'Read']]]]]));
+    }
+
+    public function testRejectsUsingOwnApp(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('not a sibling app key');
+        $this->load($this->config(['integration' => ['uses' => [['app' => 'demo', 'scopes' => ['demo:orders.read']]]]]));
+    }
+
+    public function testRejectsUsedScopeOfAnotherApp(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('Used scope "lims:requests.read"');
+        $this->load($this->config(['integration' => ['uses' => [['app' => 'qc', 'scopes' => ['lims:requests.read']]]]]));
     }
 
     /** @param array<string, mixed> $overrides */

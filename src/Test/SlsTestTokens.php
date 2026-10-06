@@ -78,14 +78,16 @@ final class SlsTestTokens
 
     /**
      * A sibling app's token for this app (doc 09, client credentials with `resource`): `sub` =
-     * `client_id` = the caller's OAuth client.
+     * `client_id` = the caller's OAuth client. `$scopes` are the app-link scopes SLS granted
+     * (`demo:orders.read`), checked by `SLS_SCOPE:` attributes.
      *
      * @param array<string, mixed> $claims overrides (null removes a claim)
+     * @param string[]             $scopes
      */
-    public function appToken(string $issuer, string $audience, string $clientId, string $app, string $tenantId, array $claims = []): string
+    public function appToken(string $issuer, string $audience, string $clientId, string $app, string $tenantId, array $claims = [], array $scopes = []): string
     {
         return $this->userAccessToken($issuer, $audience, $clientId, $clientId, $claims + [
-            'scope'       => '',
+            'scope'       => implode(' ', $scopes),
             'app'         => $app,
             'instance_id' => '00000000-0000-4000-8000-000000000001',
             'org_id'      => '00000000-0000-4000-8000-000000000002',
