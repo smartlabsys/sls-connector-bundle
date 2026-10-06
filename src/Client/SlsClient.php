@@ -17,7 +17,8 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * App → SLS calls with this instance's OAuth client (doc 05 "App → SLS", doc 09):
  * client-credentials service tokens, the token endpoint (code exchange, token exchange), UserInfo,
  * the discovery API (which sibling apps an org is connected to, which connections a tenant is
- * linked to), calls to those siblings and events sent to SLS (`seed.completed`, `user.created|updated|deleted`).
+ * linked to), calls to those siblings and events sent to SLS (`seed.completed`, `user.created|updated|deleted`,
+ * and the app's own events SLS brokers to linked siblings, {@see self::emit()}).
  */
 class SlsClient
 {
@@ -32,6 +33,7 @@ class SlsClient
         private SlsMetadata $metadata,
         private string $clientId,
         #[\SensitiveParameter] private string $clientSecret,
+        private array $config = [],
     ) {}
 
     /**
@@ -282,6 +284,11 @@ class SlsClient
      * audience), or on behalf of a user when `$userAccessToken` is given (token exchange).
      * `$instanceId` picks one instance when the org is connected to several of the app.
      *
+     * `$connectionId` (0.3) names the sibling's exact connection, e.g. `source.connection_id` of a
+     * brokered event. With `$tenantId` (this app's tenant) the call goes through
+     * {@see self::callLink()}, which also works between companies; without it the connection is
+     * looked up in the org's connections and the token names it as `target_connection`.
+     *
      * @param array<string, mixed> $options Symfony HttpClient options
      */
     public function callSibling(
@@ -292,7 +299,33 @@ class SlsClient
         array $options = [],
         #[\SensitiveParameter] ?string $userAccessToken = null,
         ?string $instanceId = null,
+        ?string $connectionId = null,
+        ?string $tenantId = null,
     ): ResponseInterface {
+        if ($connectionId !== null) {
+            if ($tenantId !== null) {
+                return $this->callLink($tenantId, $connectionId, $method, $path, $options, $userAccessToken);
+            }
+            $connection = null;
+            foreach ($this->connections($organizationId) as $candidate) {
+                if (($candidate['connection_id'] ?? null) === $connectionId && ($candidate['app'] ?? null) === $appKey && ($candidate['status'] ?? null) === 'active') {
+                    $connection = $candidate;
+                    break;
+                }
+            }
+            if ($connection === null || !is_string($connection['api_url'] ?? null)) {
+                throw new SlsUnavailableException(sprintf('The organization has no active "%s" connection %s with an API.', $appKey, $connectionId));
+            }
+            $token = $userAccessToken !== null
+                ? $this->exchangeToken($userAccessToken, null, null, $connectionId)['access_token']
+                : $this->serviceToken([], null, $organizationId, $connectionId);
+
+            return $this->httpClient->request($method, rtrim($connection['api_url'], '/') . '/' . ltrim($path, '/'), $options + [
+                'auth_bearer'   => $token,
+                'max_redirects' => 0,
+            ]);
+        }
+
         $connection = $this->connection($organizationId, $appKey, $instanceId);
         if ($connection === null || !is_string($connection['api_url'] ?? null)) {
             throw new SlsUnavailableException(sprintf('The organization has no active "%s" connection%s with an API.', $appKey, $instanceId === null ? '' : ' to instance ' . $instanceId));
@@ -355,6 +388,35 @@ class SlsClient
         }
 
         return (string) ($answer['status'] ?? 'received');
+    }
+
+    /**
+     * Send one of this app's own events for SLS to broker to the linked apps that consume it
+     * (doc 09 "Events between apps", 0.3). The type must start with this app's key and be listed
+     * under `sls_connector.events.emits`. Safe to repeat with the same `$eventId` (a UUID is
+     * generated when it is null — pass a stable one to make retries idempotent).
+     *
+     * @param array<string, mixed> $data at most 64 KB JSON-encoded
+     *
+     * @return string the event id sent
+     *
+     * @throws \InvalidArgumentException a type this app doesn't declare
+     * @throws SlsEventException          SLS refused the event (4xx)
+     * @throws SlsUnavailableException    SLS could not be reached or failed (5xx) — try again later
+     */
+    public function emit(string $type, string $tenantId, array $data = [], ?string $eventId = null): string
+    {
+        $appKey = $this->config['app']['key'] ?? null;
+        if (!is_string($appKey) || !str_starts_with($type, $appKey . '.')) {
+            throw new \InvalidArgumentException(sprintf('Event type "%s" must start with this app\'s key ("%s.").', $type, (string) $appKey));
+        }
+        if (!in_array($type, $this->config['events']['emits'] ?? [], true)) {
+            throw new \InvalidArgumentException(sprintf('Event type "%s" is not listed under sls_connector.events.emits.', $type));
+        }
+        $eventId ??= self::uuid();
+        $this->sendEvent($type, $tenantId, $data, $eventId);
+
+        return $eventId;
     }
 
     /**

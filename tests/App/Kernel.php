@@ -25,6 +25,7 @@ use Symfony\Component\Routing\Loader\Configurator\RoutingConfigurator;
  * `test` env: fixed SLS settings and a local JWKS file (the contract suite writes it).
  * `dev` env: the SLS_* registration bundle from the environment (see public/index.php).
  * `dev2` env: a second app (`demo2`, own store / session cookie) to try sibling calls (doc 09).
+ * Events (0.3): emits `<key>.order.created`, consumes the sibling's; `AppEventLogger` keeps them.
  * `/mcp` is a minimal MCP server (a `whoami` tool) behind SLS user tokens (doc 09 §4).
  * `DEMO_SEED_ASYNC=1` leaves seed jobs queued until `demo:seed:complete` finishes them.
  */
@@ -48,7 +49,8 @@ final class Kernel extends BaseKernel
     protected function configureContainer(ContainerConfigurator $container): void
     {
         $test = $this->environment === 'test';
-        $key  = $this->environment === 'dev2' ? 'demo2' : 'demo';
+        $key     = $this->environment === 'dev2' ? 'demo2' : 'demo';
+        $sibling = $key === 'demo' ? 'demo2' : 'demo';
 
         $container->parameters()->set('env(DEMO_SEED_ASYNC)', '0');
 
@@ -102,8 +104,9 @@ final class Kernel extends BaseKernel
                     ['scope' => $key . ':orders.read', 'label' => ['en' => 'Read orders', 'sr' => 'Čitanje porudžbina']],
                     ['scope' => $key . ':orders.write', 'label' => ['en' => 'Change orders', 'sr' => 'Izmena porudžbina'], 'description' => ['en' => 'Create and update orders.', 'sr' => 'Kreiranje i izmena porudžbina.']],
                 ],
-                'uses'     => [['app' => $sibling = $key === 'demo' ? 'demo2' : 'demo', 'scopes' => [$sibling . ':orders.read', $sibling . ':orders.write']]],
+                'uses'     => [['app' => $sibling, 'scopes' => [$sibling . ':orders.read', $sibling . ':orders.write']]],
             ],
+            'events'         => ['emits' => [$key . '.order.created'], 'consumes' => [$sibling . '.order.created']],
             'endpoints'      => ['api' => '/api', 'mcp' => '/mcp'],
             'api'            => ['accept_app_tokens' => true],
             'oidc'           => ['default_target_path' => '/', 'failure_path' => '/login'],

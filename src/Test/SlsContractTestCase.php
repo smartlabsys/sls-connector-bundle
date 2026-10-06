@@ -525,6 +525,12 @@ abstract class SlsContractTestCase extends WebTestCase
         self::assertSame(400, $this->webhook('{"type": "x"}')[0]);
     }
 
+    /** A brokered event the app doesn't consume is acknowledged, not refused (0.3). */
+    public function testContractAppEventNotConsumed(): void
+    {
+        self::assertSame([200, 'received'], $this->appEvent('zzcontract.thing.happened', ['n' => 1]));
+    }
+
     // ── Back-channel logout ──────────────────────────────────────────────────
 
     public function testContractBackchannelLogout(): void
@@ -550,6 +556,50 @@ abstract class SlsContractTestCase extends WebTestCase
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /**
+     * Posts a signed event another app sent through SLS (doc 09 "Events between apps", 0.3): the
+     * envelope SLS builds, with `source` naming the sender. Listeners get it as `SlsAppEvent`
+     * (`sls.event.<type>`) when the type is in `events.consumes`.
+     *
+     * @param array<string, mixed>   $data
+     * @param array<string, ?string> $source merged over a default sender (`connection_id`, `app`,
+     *                                       `instance_id`, `company_id`, `company_name`, `tenant_id`)
+     *
+     * @return array{0: int, 1: ?string} status, `status` field of the answer
+     */
+    protected function appEvent(string $type, array $data = [], array $source = [], ?string $tenantId = null, ?string $eventId = null): array
+    {
+        $app = $source['app'] ?? strstr($type, '.', true);
+
+        return $this->webhook(json_encode([
+            'event_id'    => $eventId ?? 'evt-' . $this->uid(),
+            'type'        => $type,
+            'occurred_at' => gmdate(DATE_ATOM),
+            'org_id'      => 'org-' . $this->uid(),
+            'tenant_id'   => $tenantId,
+            'data'        => (object) $data,
+            'source'      => $source + [
+                'connection_id' => 'conn-' . $this->uid(),
+                'app'           => $app,
+                'instance_id'   => 'inst-' . $this->uid(),
+                'company_id'    => 'co-' . $this->uid(),
+                'company_name'  => 'Sibling Lab',
+                'tenant_id'     => 'sibling-tenant-' . $this->uid(),
+            ],
+        ], JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * A sibling app's token for this app over a link (doc 09 10.4): `tenant_id` is the tenant here,
+     * `caller_tenant_id` the sibling's own tenant, `scope` the app-link scopes granted.
+     *
+     * @param string[] $scopes
+     */
+    protected function linkToken(array $scopes, string $tenantId, ?string $callerTenantId = null, string $app = 'sibling'): string
+    {
+        return $this->tokens->linkToken($this->issuer(), $this->audience(), $scopes, $tenantId, $callerTenantId, $app);
+    }
 
     /** @param string[] $scopes */
     protected function serviceToken(array $scopes, ?string $tenantId = null): string

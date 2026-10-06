@@ -21,6 +21,8 @@ final class SlsClientTest extends TestCase
 {
     private const ISS = 'https://sls.test';
 
+    private const EVENTS_CONFIG = ['app' => ['key' => 'demo'], 'events' => ['emits' => ['demo.order.created'], 'consumes' => []]];
+
     /** @var list<array{method: string, url: string, options: array<string, mixed>}> */
     private array $requests = [];
 
@@ -353,6 +355,91 @@ final class SlsClientTest extends TestCase
         $client->callSibling('org-1', 'lims', 'GET', '/samples');
     }
 
+    public function testEmitSendsADeclaredEvent(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['status' => 'received', 'recipients' => 1]),
+            new JsonMockResponse(['status' => 'received', 'recipients' => 1]),
+        ], self::EVENTS_CONFIG);
+
+        $eventId = $client->emit('demo.order.created', 'tenant-1', ['order' => 'o-1']);
+
+        self::assertMatchesRegularExpression('/^[0-9a-f-]{36}$/', $eventId);
+        $body = json_decode($this->requestsTo('/api/webhook/cmd/receive')[0]['options']['body'], true);
+        self::assertSame($eventId, $body['event_id']);
+        self::assertSame('demo.order.created', $body['type']);
+        self::assertSame('tenant-1', $body['tenant_id']);
+        self::assertSame(['order' => 'o-1'], $body['data']);
+
+        self::assertSame('evt-7', $client->emit('demo.order.created', 'tenant-1', [], 'evt-7'), 'a given event id is kept');
+    }
+
+    public function testEmitNeedsTheAppPrefix(): void
+    {
+        $client = $this->client([], self::EVENTS_CONFIG);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('must start with');
+        $client->emit('qc.order.created', 'tenant-1');
+    }
+
+    public function testEmitNeedsADeclaredType(): void
+    {
+        $client = $this->client([], self::EVENTS_CONFIG);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('events.emits');
+        $client->emit('demo.order.deleted', 'tenant-1');
+    }
+
+    public function testCallSiblingByConnection(): void
+    {
+        $one    = self::linked('conn-1', 'lims', 'https://lims.test');
+        $two    = self::linked('conn-2', 'lims', 'https://lims2.test');
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [$one, $two]]),
+            new JsonMockResponse(['access_token' => 'for-conn-2', 'expires_in' => 300]),
+            new JsonMockResponse(['ok' => true]),
+        ]);
+
+        $client->callSibling('org-1', 'lims', 'GET', '/samples', connectionId: 'conn-2');
+
+        $last = end($this->requests);
+        self::assertSame('https://lims2.test/api/samples', $last['url']);
+        self::assertContains('Authorization: Bearer for-conn-2', $last['options']['headers']);
+        $body = $this->requestsTo('/oauth2/token')[1]['options']['body'];
+        self::assertStringContainsString('target_connection=conn-2', $body);
+        self::assertStringNotContainsString('resource', $body);
+    }
+
+    public function testCallSiblingByUnknownConnection(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [self::linked('conn-1', 'lims', 'https://lims.test')]]),
+        ]);
+
+        $this->expectException(SlsUnavailableException::class);
+        $client->callSibling('org-1', 'lims', 'GET', '/samples', connectionId: 'conn-9');
+    }
+
+    public function testCallSiblingByConnectionAndTenantGoesOverTheLink(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [self::linked('conn-qc', 'qc', 'https://qc.test')]]),
+            new JsonMockResponse(['access_token' => 'for-qc', 'expires_in' => 300]),
+            new JsonMockResponse(['ok' => true]),
+        ]);
+
+        $client->callSibling('org-1', 'qc', 'GET', '/requests', connectionId: 'conn-qc', tenantId: 'tenant-b');
+
+        self::assertSame('https://qc.test/api/requests', end($this->requests)['url']);
+        self::assertStringContainsString('caller_tenant_id=tenant-b', $this->requestsTo('/oauth2/token')[1]['options']['body']);
+    }
+
     public function testUnreachableSls(): void
     {
         $client = $this->client([new MockResponse('', ['error' => 'Connection refused'])]);
@@ -372,8 +459,11 @@ final class SlsClientTest extends TestCase
         ];
     }
 
-    /** @param list<MockResponse> $responses */
-    private function client(array $responses): SlsClient
+    /**
+     * @param list<MockResponse>   $responses
+     * @param array<string, mixed> $config    the bundle config, as `%sls_connector.config%`
+     */
+    private function client(array $responses, array $config = []): SlsClient
     {
         $this->responses = $responses;
         $discovery       = ['issuer' => self::ISS, 'token_endpoint' => self::ISS . '/oauth2/token', 'jwks_uri' => self::ISS . '/oauth2/jwks'];
@@ -387,7 +477,7 @@ final class SlsClientTest extends TestCase
         });
         $cache = new ArrayAdapter();
 
-        return new SlsClient($http, $cache, new SlsMetadata($http, $cache, self::ISS), 'demo-client', 's3cret');
+        return new SlsClient($http, $cache, new SlsMetadata($http, $cache, self::ISS), 'demo-client', 's3cret', $config);
     }
 
     /** @return list<array{method: string, url: string, options: array<string, mixed>}> */

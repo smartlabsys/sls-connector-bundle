@@ -28,6 +28,8 @@ return static function (ContainerConfigurator $container): void {
     $services->load('Smartlabsys\\SlsConnectorBundle\\', '../src/')
         ->exclude([
             '../src/SlsConnectorBundle.php',
+            '../src/Attribute/',
+            '../src/Event/',
             '../src/Exception/',
             '../src/Test/',
             '../src/Webhook/',
@@ -45,5 +47,11 @@ return static function (ContainerConfigurator $container): void {
         ]);
 
     $services->load('Smartlabsys\\SlsConnectorBundle\\Controller\\', '../src/Controller/')
+        ->exclude('../src/Controller/ArgumentResolver/')
         ->tag('controller.service_arguments');
+
+    // Before Doctrine's entity resolver (110), so a tenant-typed argument gets the #[SlsSibling] tenant.
+    $services->set(\Smartlabsys\SlsConnectorBundle\Controller\ArgumentResolver\SlsTenantValueResolver::class)
+        ->autoconfigure(false)
+        ->tag('controller.argument_value_resolver', ['priority' => 150]);
 };

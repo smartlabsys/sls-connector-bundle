@@ -96,6 +96,21 @@ final class SlsTestTokens
     }
 
     /**
+     * A sibling's token over a link (doc 09 10.4, both ends named): {@see self::appToken()} plus
+     * `caller_tenant_id` (the caller's tenant in its own app, a generated one when null);
+     * `sub` = `client_id` = `<app>-client`.
+     *
+     * @param string[]             $scopes
+     * @param array<string, mixed> $claims overrides (null removes a claim)
+     */
+    public function linkToken(string $issuer, string $audience, array $scopes, string $tenantId, ?string $callerTenantId = null, string $app = 'sibling', array $claims = []): string
+    {
+        return $this->appToken($issuer, $audience, $app . '-client', $app, $tenantId, $claims + [
+            'caller_tenant_id' => $callerTenantId ?? $app . '-tenant-' . bin2hex(random_bytes(4)),
+        ], $scopes);
+    }
+
+    /**
      * A user access token for the app's API / MCP.
      *
      * @param array<string, mixed> $claims

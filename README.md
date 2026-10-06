@@ -21,6 +21,12 @@ The contract itself is specified in the SLS repo: `docs/platform/05-app-contract
 
 Requirements: PHP ≥ 8.2 and Symfony 7.4 (framework, security, http-client, cache).
 
+> **0.3.0-dev (unreleased, branch `phase-10-events`).** Adds events between apps and sibling
+> endpoint helpers, all backward compatible: `SlsClient::emit()`, `Event\SlsAppEvent`
+> (`sls.event.<type>`), `Provisioning\CompanyUpdatedHandlerInterface`, `#[SlsSibling]` with
+> `Security\SlsTenantResolverInterface`, `callSibling(connectionId:)`, and the test kit's
+> `appEvent()` / `linkToken()`. Needs SLS with 10.8 (event broker) for `emit()`.
+
 ## Install
 
 ```bash
@@ -81,7 +87,9 @@ sls_connector:
               label: { en: Sample types, sr: Vrste uzoraka }
               description: { en: Which sample types to create. }   # optional help text
               choice_labels: { food: { en: Food, sr: Hrana }, water: { en: Water, sr: Voda } }
-    events: { emits: [], consumes: [] }
+    events:                                  # events between apps (0.3) — optional
+        emits: ['qc.request.created']        # own events SLS brokers to linked apps: "<app key>." prefix
+        consumes: ['lims.request.updated']  # other apps' events this app wants (SlsAppEvent)
     integration:                             # app links (doc 09) — optional
         provides:                            # what siblings may be allowed to do here
             - { scope: 'qc:requests.read', label: { en: Read requests, sr: Čitanje zahteva } }
@@ -102,7 +110,8 @@ sls_connector:
 
 The configuration is validated when the container is built. The rules match the ones SLS
 applies to manifests: the app key must match `^[a-z][a-z0-9_-]{1,31}$`, role keys must carry the
-app prefix, labels need an `en` entry, and endpoints must be absolute paths. Scopes look like
+app prefix, labels need an `en` entry, and endpoints must be absolute paths. Event types are
+dotted lowercase (`qc.request.created`, ≤ 64 characters). Scopes look like
 `<app>:<resource>.<action>`: provided ones carry this app's key, used ones the sibling's.
 
 After deploying, run `bin/console sls:connector:warmup`. It fetches and caches SLS's discovery
@@ -211,6 +220,8 @@ implementations of one interface, alias the interface to the one you want.
 | `Scim\ScimUserMapperInterface` | SCIM users | CRUD on `ScimUser`. Throw `ContractException::conflict(…, 'uniqueness')` for a duplicate `userName`. |
 | `Scim\ScimGroupMapperInterface` | SCIM groups (optional) | Without it, `/Groups` answers 501. |
 | `Health\HealthCheckInterface` | health (optional) | Any failing check reports the instance as `degraded`. |
+| `Provisioning\CompanyUpdatedHandlerInterface` | company details (optional, 0.3) | `companyUpdated($tenantId, CompanyDetails)` on each `company.updated` webhook with a named company. Saves writing the listener yourself. |
+| `Security\SlsTenantResolverInterface` | `#[SlsSibling]` (optional, 0.3) | `resolveTenant($tenantId)` → your tenant object (a `Company`, …) or null → 404 `tenant_not_found`. |
 
 If an optional interface has no implementation, its endpoint answers `501 not_implemented`.
 The bundle handles the protocol for you: SCIM filtering (`eq ne co sw pr` joined by `and`),
@@ -238,6 +249,46 @@ learn about siblings), `user.assigned|updated|unassigned` (to the assignment's a
 `{link_id, caller, target, enabled, scopes}`). `tenant_id` is your tenant for the org. The bundle
 drops its cached discovery answers on `connection.*` and `link.*` events.
 
+### Events between apps (0.3)
+
+An app announces its own events with `emit()`; SLS (10.8) delivers them to every connection
+linked to the sender (either direction, link on) whose manifest lists the type under
+`events.consumes`. The type must start with this app's key and be listed under `events.emits`
+(`InvalidArgumentException` otherwise); `data` is at most 64 KB.
+
+```php
+$eventId = $client->emit('qc.request.created', $tenantId, ['request_id' => $id]); // returns the event id
+$client->emit('qc.request.created', $tenantId, $data, $stableId);                 // idempotent resend
+```
+
+On the receiving side the envelope carries `source` (the sender: `connection_id`, `app`,
+`instance_id`, `company_id`, `company_name`, `tenant_id`). For a type under `events.consumes` the
+bundle dispatches, after the usual `sls.webhook*` events, `Event\SlsAppEvent` as `sls.event` and
+`sls.event.<type>`. Other brokered types are acknowledged and logged, not dispatched.
+
+```php
+#[AsEventListener('sls.event.qc.request.created')]
+public function onRequest(SlsAppEvent $event): void
+{
+    $request = $this->client->callSibling($event->organizationId, 'qc', 'GET', '/requests/' . $event->data['request_id'],
+        connectionId: $event->source['connection_id'], tenantId: $event->tenantId);
+}
+```
+
+### Sibling endpoints (0.3)
+
+`#[SlsSibling(scope: 'qc:requests.read')]` on a controller class or action, for calls from sibling
+apps (`SlsAppUser`): without the scope the answer is 403 `{"error":"forbidden"}`; with a
+`SlsTenantResolverInterface` the token's `tenant_id` is resolved (404 `tenant_not_found` when
+null) and handed to an argument typed as your tenant class. Users pass through untouched (check
+them as usual).
+
+```php
+#[Route('/api/sibling/requests', methods: ['GET'])]
+#[SlsSibling(scope: 'qc:requests.read')]
+public function list(?Company $company = null): JsonResponse { /* $company: the caller's tenant here */ }
+```
+
 ### Calling SLS and sibling apps
 
 ```php
@@ -249,6 +300,9 @@ $client->callSibling($orgId, 'lims', 'GET', '/samples', instanceId: $instanceId)
 $client->links($tenantId);                                    // what this tenant is linked to, cached 5 min
 $client->callLink($tenantId, 'qc', 'POST', '/requests', ['json' => $body]);       // by app key or connection id
 $client->callLink($tenantId, $connectionId, 'GET', '/requests', [], $userToken);  // as the user
+$client->callSibling($orgId, 'qc', 'GET', '/requests', connectionId: $connId);    // one exact connection (0.3)
+$client->callSibling($orgId, 'qc', 'GET', '/requests', connectionId: $connId, tenantId: $tenantId); // = callLink()
+$client->emit('lims.sample.received', $tenantId, $data);      // an event for linked apps (0.3)
 $client->seedCompleted($tenantId, $job);                      // an async seed job finished
 $client->userCreated($tenantId, $scimUser);                   // a user was created locally
 $client->sendEvent('some.event', $tenantId, $data);           // any event SLS accepts
@@ -322,7 +376,9 @@ manifest, health, token rejection, the tenant lifecycle, seeds, SCIM users and g
 webhooks and back-channel logout. You can override hooks such as `contractTenantRequest()`,
 `contractScimUser()`, `contractRoles()`, `contractSupportsGroups()` and
 `contractSupportsSeeds()` to fit your app. `Test\SlsTestTokens` is also available for your own
-tests.
+tests. For your own event and sibling tests (0.3) the case offers `appEvent($type, $data, $source)`
+(a signed brokered event) and `linkToken($scopes, $tenantId, $callerTenantId)` (a sibling's token
+over a link).
 
 ## Developing the bundle
 

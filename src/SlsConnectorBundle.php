@@ -24,6 +24,9 @@ final class SlsConnectorBundle extends AbstractBundle
 
     private const APP_KEY_PATTERN = '/^[a-z][a-z0-9_-]{1,31}$/';
 
+    /** An event type, as SLS accepts it (doc 05 `events`). */
+    public const EVENT_TYPE_PATTERN = '/^[a-z0-9_]+(\.[a-z0-9_]+)+$/';
+
     protected string $extensionAlias = 'sls_connector';
 
     /** Interfaces an app implements; each is aliased to its single implementation. */
@@ -33,6 +36,8 @@ final class SlsConnectorBundle extends AbstractBundle
         'scim_user_mapper'   => Scim\ScimUserMapperInterface::class,
         'scim_group_mapper'  => Scim\ScimGroupMapperInterface::class,
         'user_resolver'      => Security\SlsUserResolverInterface::class,
+        'company_updated_handler' => Provisioning\CompanyUpdatedHandlerInterface::class,
+        'tenant_resolver'    => Security\SlsTenantResolverInterface::class,
     ];
 
     public function build(ContainerBuilder $container): void
@@ -88,6 +93,7 @@ final class SlsConnectorBundle extends AbstractBundle
                     ->end()
                 ->end()
                 ->arrayNode('events')
+                    ->info('Event types (doc 05): `emits` — this app\'s own events SLS brokers to linked apps (prefixed with the app key to be brokered); `consumes` — SLS\'s and other apps\' events it wants.')
                     ->addDefaultsIfNotSet()
                     ->children()
                         ->arrayNode('emits')->scalarPrototype()->end()->end()
@@ -164,6 +170,13 @@ final class SlsConnectorBundle extends AbstractBundle
                         foreach ($used['scopes'] as $scope) {
                             if (!self::isScope($scope, $used['app'])) {
                                 throw new \InvalidArgumentException(sprintf('Used scope "%s" must look like "%s:resource.action".', $scope, $used['app']));
+                            }
+                        }
+                    }
+                    foreach (['emits', 'consumes'] as $list) {
+                        foreach ($config['events'][$list] as $type) {
+                            if (!is_string($type) || strlen($type) > 64 || !preg_match(self::EVENT_TYPE_PATTERN, $type)) {
+                                throw new \InvalidArgumentException(sprintf('Event type "%s" in events.%s must be dotted lowercase, e.g. "%s.request.created".', (string) $type, $list, $config['app']['key']));
                             }
                         }
                     }

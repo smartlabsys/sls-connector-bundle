@@ -118,6 +118,34 @@ final class ConfigurationTest extends TestCase
         $this->load($this->config(['integration' => ['uses' => [['app' => 'qc', 'scopes' => ['lims:requests.read']]]]]));
     }
 
+    public function testEventsReachTheConfig(): void
+    {
+        $events = ['emits' => ['demo.order.created', 'legacy_event.done'], 'consumes' => ['qc.request.created', 'company.updated']];
+        $config = $this->load($this->config(['events' => $events]))->getParameter('sls_connector.config');
+
+        self::assertSame($events, $config['events'], 'unprefixed emits are accepted (never brokered)');
+    }
+
+    public function testRejectsMalformedEventType(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('Event type "Order Created" in events.emits');
+        $this->load($this->config(['events' => ['emits' => ['Order Created']]]));
+    }
+
+    public function testRejectsUndottedConsumedType(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('events.consumes');
+        $this->load($this->config(['events' => ['consumes' => ['created']]]));
+    }
+
+    public function testRejectsTooLongEventType(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->load($this->config(['events' => ['emits' => ['demo.' . str_repeat('x', 60)]]]));
+    }
+
     /** @param array<string, mixed> $overrides */
     private function config(array $overrides = []): array
     {

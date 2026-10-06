@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Smartlabsys\SlsConnectorBundle\Tests\App\Controller;
 
+use Smartlabsys\SlsConnectorBundle\Attribute\SlsSibling;
 use Smartlabsys\SlsConnectorBundle\Client\SlsClient;
 use Smartlabsys\SlsConnectorBundle\Client\SlsTokenException;
 use Smartlabsys\SlsConnectorBundle\Exception\SlsUnavailableException;
+use Smartlabsys\SlsConnectorBundle\Provisioning\Model\Tenant;
 use Smartlabsys\SlsConnectorBundle\Security\OidcLoginFlow;
 use Smartlabsys\SlsConnectorBundle\Security\SlsAppUser;
 use Smartlabsys\SlsConnectorBundle\Security\SlsUserTokenHandler;
@@ -128,6 +130,18 @@ final class DemoController
         }
 
         return new JsonResponse(['app' => $this->appKey, 'orders' => []]);
+    }
+
+    /**
+     * A sibling-only endpoint (0.3): `#[SlsSibling]` checks the scope (403) and hands over the tenant
+     * the token names, resolved by `DemoTenantResolver` (404 when it isn't here). Users pass through
+     * with no tenant. The scope is `demo:` — this endpoint is meant for the `demo` app.
+     */
+    #[Route('/api/sibling/orders', name: 'demo_api_sibling_orders', methods: ['GET'])]
+    #[SlsSibling(scope: 'demo:orders.read')]
+    public function siblingOrders(?Tenant $tenant = null): JsonResponse
+    {
+        return new JsonResponse(['app' => $this->appKey, 'tenant' => $tenant?->toArray(), 'orders' => []]);
     }
 
     #[Route('/api/me', name: 'demo_api_me', methods: ['GET'])]
