@@ -134,6 +134,113 @@ final class SlsClientTest extends TestCase
         $client->serviceToken([], 'https://lims.test');
     }
 
+    public function testSiblingServiceTokenByTargetConnection(): void
+    {
+        $client = $this->client([new JsonMockResponse(['access_token' => 'for-qc', 'expires_in' => 300])]);
+
+        self::assertSame('for-qc', $client->serviceToken([], null, null, 'conn-qc', 'tenant-a'));
+        $body = $this->requestsTo('/oauth2/token')[0]['options']['body'];
+        self::assertStringContainsString('target_connection=conn-qc', $body);
+        self::assertStringContainsString('caller_tenant_id=tenant-a', $body);
+        self::assertStringNotContainsString('org_id', $body);
+        self::assertStringNotContainsString('resource', $body);
+    }
+
+    public function testCallerTenantOnlyForSiblingTokens(): void
+    {
+        $client = $this->client([new JsonMockResponse(['access_token' => 'own', 'expires_in' => 300])]);
+
+        $client->serviceToken([], null, null, null, 'tenant-a');
+        self::assertStringNotContainsString('caller_tenant_id', $this->requestsTo('/oauth2/token')[0]['options']['body']);
+    }
+
+    public function testExchangeTokenByTargetConnection(): void
+    {
+        $client = $this->client([new JsonMockResponse(['access_token' => 'exchanged', 'expires_in' => 300])]);
+
+        $client->exchangeToken('user-token', null, null, 'conn-qc', 'tenant-a');
+        $body = $this->requestsTo('/oauth2/token')[0]['options']['body'];
+        self::assertStringContainsString('target_connection=conn-qc', $body);
+        self::assertStringContainsString('caller_tenant_id=tenant-a', $body);
+        self::assertStringNotContainsString('resource', $body);
+    }
+
+    public function testExchangeTokenNeedsATarget(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->client([])->exchangeToken('user-token', null);
+    }
+
+    public function testLinksAreCachedPerTenantAndForgotten(): void
+    {
+        $qc     = self::linked('conn-qc', 'qc', 'https://qc.test');
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['org_id' => 'org-1', 'company_id' => 'c-a', 'items' => [$qc]]),
+            new JsonMockResponse(['org_id' => 'org-1', 'company_id' => 'c-b', 'items' => []]),
+            new JsonMockResponse(['org_id' => 'org-1', 'company_id' => 'c-a', 'items' => []]),
+        ]);
+
+        self::assertSame($qc, $client->link('tenant-a', 'conn-qc'));
+        self::assertSame($qc, $client->link('tenant-a', 'qc'), 'by app key, from cache');
+        self::assertNull($client->link('tenant-a', 'financial'));
+        self::assertCount(1, $this->requestsTo('/api/discovery/tenant/tenant-a/links'));
+        self::assertSame([], $client->links('tenant-b'), 'cached per tenant');
+
+        $client->forgetLinks('tenant-a');
+        self::assertNull($client->link('tenant-a', 'conn-qc'));
+        self::assertCount(2, $this->requestsTo('/api/discovery/tenant/tenant-a/links'));
+    }
+
+    public function testCallLinkNamesBothEnds(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [self::linked('conn-qc', 'qc', 'https://qc.test')]]),
+            new JsonMockResponse(['access_token' => 'for-qc', 'expires_in' => 300]),
+            new JsonMockResponse(['ok' => true]),
+        ]);
+
+        $client->callLink('tenant-b', 'conn-qc', 'POST', '/requests', ['json' => ['x' => 1]]);
+
+        $last = end($this->requests);
+        self::assertSame('https://qc.test/api/requests', $last['url']);
+        self::assertContains('Authorization: Bearer for-qc', $last['options']['headers']);
+        $body = $this->requestsTo('/oauth2/token')[1]['options']['body'];
+        self::assertStringContainsString('grant_type=client_credentials', $body);
+        self::assertStringContainsString('target_connection=conn-qc', $body);
+        self::assertStringContainsString('caller_tenant_id=tenant-b', $body);
+    }
+
+    public function testCallLinkForAUser(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [self::linked('conn-qc', 'qc', 'https://qc.test')]]),
+            new JsonMockResponse(['access_token' => 'exchanged', 'expires_in' => 300]),
+            new JsonMockResponse(['ok' => true]),
+        ]);
+
+        $client->callLink('tenant-b', 'qc', 'GET', '/requests', userAccessToken: 'user-token');
+
+        self::assertContains('Authorization: Bearer exchanged', end($this->requests)['options']['headers']);
+        $body = $this->requestsTo('/oauth2/token')[1]['options']['body'];
+        self::assertStringContainsString('subject_token=user-token', $body);
+        self::assertStringContainsString('target_connection=conn-qc', $body);
+        self::assertStringContainsString('caller_tenant_id=tenant-b', $body);
+    }
+
+    public function testCallLinkWithoutLink(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => []]),
+        ]);
+
+        $this->expectException(SlsUnavailableException::class);
+        $client->callLink('tenant-b', 'conn-qc', 'GET', '/requests');
+    }
+
     public function testSendEvent(): void
     {
         $client = $this->client([
@@ -252,6 +359,17 @@ final class SlsClientTest extends TestCase
 
         $this->expectException(SlsUnavailableException::class);
         $client->serviceToken();
+    }
+
+    /** @return array<string, mixed> one item of the tenant links answer */
+    private static function linked(string $connectionId, string $app, string $base): array
+    {
+        return [
+            'app' => $app, 'connection_id' => $connectionId, 'instance_id' => 'i-' . $app, 'tenant_id' => 't-' . $app,
+            'company_id' => 'c-a', 'company_name' => 'Lab A', 'api_url' => $base . '/api', 'mcp_url' => null,
+            'audience' => $base, 'status' => 'active', 'link_id' => 'l-1', 'scopes' => [$app . ':requests.write'],
+            'declared' => true, 'same_company' => false,
+        ];
     }
 
     /** @param list<MockResponse> $responses */

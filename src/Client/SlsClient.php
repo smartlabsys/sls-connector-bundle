@@ -16,8 +16,8 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 /**
  * App → SLS calls with this instance's OAuth client (doc 05 "App → SLS", doc 09):
  * client-credentials service tokens, the token endpoint (code exchange, token exchange), UserInfo,
- * the discovery API (which sibling apps an org is connected to), calls to those siblings and
- * events sent to SLS (`seed.completed`, `user.created|updated|deleted`).
+ * the discovery API (which sibling apps an org is connected to, which connections a tenant is
+ * linked to), calls to those siblings and events sent to SLS (`seed.completed`, `user.created|updated|deleted`).
  */
 class SlsClient
 {
@@ -37,28 +37,40 @@ class SlsClient
     /**
      * A client-credentials access token for this app, cached until 30 s before it expires.
      *
-     * For a sibling app (`$resource`, RFC 8707) SLS needs the org whose tenant there the call is
-     * for: both apps must be connected to it, and the token carries that tenant's `tenant_id`.
+     * For a sibling app SLS needs the connection the call is for: `$targetConnectionId` (a
+     * `connection_id` from discovery, doc 09 10.4), or `$resource` (RFC 8707) with the org whose
+     * connection to that instance it is. The token carries the target's `tenant_id`.
+     * `$callerTenantId` names this app's tenant the call comes from, when it has several in the org.
      *
      * @param string[] $scopes
-     * @param ?string  $resource       audience of a sibling app instance — doc 09
-     * @param ?string  $organizationId SLS org id, required with `$resource`
+     * @param ?string  $resource           audience of a sibling app instance — doc 09
+     * @param ?string  $organizationId     SLS org id, required with `$resource` alone
+     * @param ?string  $targetConnectionId the sibling's connection id
+     * @param ?string  $callerTenantId     this app's tenant making the call
      */
-    public function serviceToken(array $scopes = [], ?string $resource = null, ?string $organizationId = null): string
-    {
-        if ($resource !== null && $organizationId === null) {
-            throw new \InvalidArgumentException('A service token for a sibling app needs the organization id.');
+    public function serviceToken(
+        array $scopes = [],
+        ?string $resource = null,
+        ?string $organizationId = null,
+        ?string $targetConnectionId = null,
+        ?string $callerTenantId = null,
+    ): string {
+        if ($resource !== null && $organizationId === null && $targetConnectionId === null) {
+            throw new \InvalidArgumentException('A service token for a sibling app needs the organization id or the target connection.');
         }
-        $item = $this->cache->getItem('sls_connector.service_token.' . sha1(implode(' ', $scopes) . '|' . $resource . '|' . $organizationId));
+        $sibling = $resource !== null || $targetConnectionId !== null;
+        $item    = $this->cache->getItem('sls_connector.service_token.' . sha1(implode(' ', $scopes) . '|' . $resource . '|' . $organizationId . '|' . $targetConnectionId . '|' . $callerTenantId));
         if ($item->isHit()) {
             return $item->get();
         }
 
         $response = $this->tokenRequest(array_filter([
-            'grant_type' => 'client_credentials',
-            'scope'      => $scopes ? implode(' ', $scopes) : null,
-            'resource'   => $resource,
-            'org_id'     => $resource !== null ? $organizationId : null,
+            'grant_type'        => 'client_credentials',
+            'scope'             => $scopes ? implode(' ', $scopes) : null,
+            'resource'          => $resource,
+            'target_connection' => $targetConnectionId,
+            'org_id'            => $sibling ? $organizationId : null,
+            'caller_tenant_id'  => $sibling ? $callerTenantId : null,
         ]));
         $ttl = (int) ($response['expires_in'] ?? 60) - 30;
         if ($ttl > 0) {
@@ -70,17 +82,29 @@ class SlsClient
 
     /**
      * RFC 8693: swap a user's access token for one meant for a sibling app instance (`resource` =
-     * its audience). SLS only issues it if the user is assigned to the org's connection there.
+     * its audience, or `$targetConnectionId`). SLS only issues it if the user is assigned to that
+     * connection. `$callerTenantId` defaults, on SLS's side, to the user token's `tenant_id`.
      *
      * @return array<string, mixed> the token response (`access_token`, `expires_in`, …)
      */
-    public function exchangeToken(#[\SensitiveParameter] string $subjectToken, string $resource, ?string $scope = null): array
-    {
+    public function exchangeToken(
+        #[\SensitiveParameter] string $subjectToken,
+        ?string $resource,
+        ?string $scope = null,
+        ?string $targetConnectionId = null,
+        ?string $callerTenantId = null,
+    ): array {
+        if (($resource === null || $resource === '') && ($targetConnectionId === null || $targetConnectionId === '')) {
+            throw new \InvalidArgumentException('A token exchange needs the resource or the target connection.');
+        }
+
         return $this->tokenRequest(array_filter([
             'grant_type'         => self::TOKEN_EXCHANGE_GRANT,
             'subject_token'      => $subjectToken,
             'subject_token_type' => self::ACCESS_TOKEN_TYPE,
             'resource'           => $resource,
+            'target_connection'  => $targetConnectionId,
+            'caller_tenant_id'   => $callerTenantId,
             'scope'              => $scope,
         ]));
     }
@@ -137,7 +161,7 @@ class SlsClient
      * The org's connected app instances (doc 09 §1), cached for 5 minutes and dropped on
      * `connection.*` webhooks.
      *
-     * @return list<array{app: string, instance_id: string, instance_name?: string, tenant_id: ?string, api_url: ?string, mcp_url: ?string, audience: string, status: string}>
+     * @return list<array{app: string, connection_id?: string, instance_id: string, instance_name?: string, tenant_id: ?string, api_url: ?string, mcp_url: ?string, audience: string, status: string}>
      */
     public function connections(string $organizationId, bool $refresh = false): array
     {
@@ -146,19 +170,7 @@ class SlsClient
             return $item->get();
         }
 
-        $url = $this->metadata->issuer() . '/api/discovery/organization/' . rawurlencode($organizationId) . '/connections';
-        try {
-            $data = $this->httpClient->request('GET', $url, [
-                'auth_bearer'   => $this->serviceToken(),
-                'headers'       => ['Accept' => 'application/json'],
-                'timeout'       => 5,
-                'max_duration'  => 10,
-                'max_redirects' => 0,
-            ])->toArray();
-        } catch (ExceptionInterface $e) {
-            throw new SlsUnavailableException('SLS discovery failed: ' . $e->getMessage(), 0, $e);
-        }
-        $items = array_values(array_filter($data['items'] ?? [], 'is_array'));
+        $items = $this->discover('/api/discovery/organization/' . rawurlencode($organizationId) . '/connections');
         $this->cache->save($item->set($items)->expiresAfter(self::DISCOVERY_TTL));
 
         return $items;
@@ -185,6 +197,84 @@ class SlsClient
     public function forgetConnections(string $organizationId): void
     {
         $this->cache->deleteItem($this->discoveryCacheKey($organizationId));
+    }
+
+    /**
+     * The connections this app's tenant is linked to (doc 09 §1, 10.4): inside its company and to
+     * other companies, enabled links only, each with `link_id` and the granted `scopes`. Cached
+     * for 5 minutes and dropped on `link.*` / `connection.*` webhooks for that tenant.
+     *
+     * @return list<array{app: string, connection_id: string, instance_id: string, tenant_id: ?string, company_id: ?string, company_name: ?string, api_url: ?string, mcp_url: ?string, audience: string, status: string, link_id: ?string, scopes: list<string>, declared: bool, same_company: bool}>
+     */
+    public function links(string $tenantId, bool $refresh = false): array
+    {
+        $item = $this->cache->getItem($this->linksCacheKey($tenantId));
+        if ($item->isHit() && !$refresh) {
+            return $item->get();
+        }
+
+        $items = $this->discover('/api/discovery/tenant/' . rawurlencode($tenantId) . '/links');
+        $this->cache->save($item->set($items)->expiresAfter(self::DISCOVERY_TTL));
+
+        return $items;
+    }
+
+    /**
+     * One linked connection of the tenant: by connection id, or the first active one of the app
+     * with that key.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function link(string $tenantId, string $connectionIdOrAppKey): ?array
+    {
+        $byApp = null;
+        foreach ($this->links($tenantId) as $link) {
+            if (($link['connection_id'] ?? null) === $connectionIdOrAppKey) {
+                return $link;
+            }
+            if ($byApp === null && ($link['app'] ?? null) === $connectionIdOrAppKey && ($link['status'] ?? null) === 'active') {
+                $byApp = $link;
+            }
+        }
+
+        return $byApp;
+    }
+
+    public function forgetLinks(string $tenantId): void
+    {
+        $this->cache->deleteItem($this->linksCacheKey($tenantId));
+    }
+
+    /**
+     * Call a connection the tenant is linked to (doc 09 §2, 10.4), by connection id or app key.
+     * The token names both ends (`target_connection`, `caller_tenant_id`), so it works between
+     * companies and when the org has several connections to the same app. As this app, or on
+     * behalf of a user when `$userAccessToken` is given (token exchange).
+     *
+     * @param array<string, mixed> $options Symfony HttpClient options
+     *
+     * @throws SlsUnavailableException no such link, or the linked connection has no API
+     */
+    public function callLink(
+        string $tenantId,
+        string $connectionIdOrAppKey,
+        string $method,
+        string $path,
+        array $options = [],
+        #[\SensitiveParameter] ?string $userAccessToken = null,
+    ): ResponseInterface {
+        $link = $this->link($tenantId, $connectionIdOrAppKey);
+        if ($link === null || ($link['status'] ?? null) !== 'active' || !is_string($link['api_url'] ?? null) || !is_string($link['connection_id'] ?? null)) {
+            throw new SlsUnavailableException(sprintf('Tenant "%s" has no active link to "%s" with an API.', $tenantId, $connectionIdOrAppKey));
+        }
+        $token = $userAccessToken !== null
+            ? $this->exchangeToken($userAccessToken, null, null, $link['connection_id'], $tenantId)['access_token']
+            : $this->serviceToken([], null, null, $link['connection_id'], $tenantId);
+
+        return $this->httpClient->request($method, rtrim($link['api_url'], '/') . '/' . ltrim($path, '/'), $options + [
+            'auth_bearer'   => $token,
+            'max_redirects' => 0,
+        ]);
     }
 
     /**
@@ -342,8 +432,35 @@ class SlsClient
         return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($bytes), 4));
     }
 
+    /**
+     * GET a discovery endpoint with this app's service token.
+     *
+     * @return list<array<string, mixed>> its `items`
+     */
+    private function discover(string $path): array
+    {
+        try {
+            $data = $this->httpClient->request('GET', $this->metadata->issuer() . $path, [
+                'auth_bearer'   => $this->serviceToken(),
+                'headers'       => ['Accept' => 'application/json'],
+                'timeout'       => 5,
+                'max_duration'  => 10,
+                'max_redirects' => 0,
+            ])->toArray();
+        } catch (ExceptionInterface $e) {
+            throw new SlsUnavailableException('SLS discovery failed: ' . $e->getMessage(), 0, $e);
+        }
+
+        return array_values(array_filter($data['items'] ?? [], 'is_array'));
+    }
+
     private function discoveryCacheKey(string $organizationId): string
     {
         return 'sls_connector.discovery.' . sha1($organizationId);
+    }
+
+    private function linksCacheKey(string $tenantId): string
+    {
+        return 'sls_connector.links.' . sha1($tenantId);
     }
 }

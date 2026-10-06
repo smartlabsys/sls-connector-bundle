@@ -143,11 +143,12 @@ For the login button, call the `sls_login_url()` Twig function (with an optional
 
 With `api.accept_app_tokens: true`, a sibling app's own token (`sub` = its `client_id`) passes
 the `api` firewall as a `Security\SlsAppUser` (`ROLE_SLS_APP`, with `app`, `instanceId`,
-`organizationId` and `tenantId`). Otherwise such tokens are refused. SLS service tokens are
+`organizationId`, `tenantId` and `callerTenantId`, the caller's own tenant). Otherwise such
+tokens are refused. SLS service tokens are
 always refused there.
 
-**App-link scopes.** The token carries the scopes the org's app link grants the caller (all the
-ones it `uses` that you `provide`, minus any an org admin took away). Guard sibling endpoints with
+**Link scopes.** The token carries the scopes the link from the caller's connection to yours
+grants (all the ones it `uses` that you `provide`, minus any an org admin took away). Guard sibling endpoints with
 them:
 
 ```php
@@ -233,8 +234,9 @@ after 1, 5, 15 and 60 minutes.
 
 SLS sends `connection.created|suspended|resumed|disconnected` (to every app of the org, so you
 learn about siblings), `user.assigned|updated|unassigned` (to the assignment's app) and
-`organization.updated`. `tenant_id` is your tenant for the org. The bundle drops its cached
-discovery answer on `connection.*` events.
+`organization.updated`, `link.created|updated|removed` (to both connections of a link, with
+`{link_id, caller, target, enabled, scopes}`). `tenant_id` is your tenant for the org. The bundle
+drops its cached discovery answers on `connection.*` and `link.*` events.
 
 ### Calling SLS and sibling apps
 
@@ -244,6 +246,9 @@ $client->connections($orgId);                                 // discovery, cach
 $client->callSibling($orgId, 'lims', 'GET', '/samples');      // as this app
 $client->callSibling($orgId, 'lims', 'GET', '/samples', [], OidcLoginFlow::accessToken($session)); // as the user
 $client->callSibling($orgId, 'lims', 'GET', '/samples', instanceId: $instanceId); // one of several LIMS instances
+$client->links($tenantId);                                    // what this tenant is linked to, cached 5 min
+$client->callLink($tenantId, 'qc', 'POST', '/requests', ['json' => $body]);       // by app key or connection id
+$client->callLink($tenantId, $connectionId, 'GET', '/requests', [], $userToken);  // as the user
 $client->seedCompleted($tenantId, $job);                      // an async seed job finished
 $client->userCreated($tenantId, $scimUser);                   // a user was created locally
 $client->sendEvent('some.event', $tenantId, $data);           // any event SLS accepts
@@ -251,8 +256,14 @@ $client->sendEvent('some.event', $tenantId, $data);           // any event SLS a
 
 - **As this app**, the sibling gets a token with `aud` = the sibling, `sub` = your client id and
   `tenant_id` = the org's tenant *there*. SLS issues it only while both apps are connected to the
-  org, and refuses it (`invalid_target`) once an org admin switches the app link off. The token
-  gets every scope the link grants; the cached token keeps them until it expires (≤ 15 min).
+  org, and refuses it (`invalid_target`) without a link or once an org admin switches it off. The
+  token gets every scope the link grants; the cached token keeps them until it expires (≤ 15 min).
+- **Links** (SLS 10.4) go from one connection to another. Inside one company they are on by
+  default; between companies (Lab A's LIMS → the org's QC) an org admin creates them. When your
+  app has several tenants in one org (one per company), use `links()` / `callLink()` with the
+  tenant the call is for: the token names both connections (`target_connection`,
+  `caller_tenant_id`), and the receiving app sees `SlsAppUser::$callerTenantId`.
+  `callSibling()` still works while the org has one connection per app.
 - **As the user**, SLS swaps the user's access token (RFC 8693 token exchange). The new token
   carries the user's roles in the sibling, `tenant_id` there, and `act: {sub, app, instance_id}`
   naming your app. SLS refuses it if the user isn't assigned to the sibling.

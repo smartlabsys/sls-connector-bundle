@@ -65,12 +65,13 @@ final class SlsUserTokenHandlerTest extends TestCase
 
     public function testAppTokenAcceptedWhenEnabled(): void
     {
-        $user = $this->handler(true)->getUserBadgeFrom($this->tokens->appToken(self::ISS, self::AUD, 'lims-client', 'lims', 'tenant-1'))->getUser();
+        $user = $this->handler(true)->getUserBadgeFrom($this->tokens->appToken(self::ISS, self::AUD, 'lims-client', 'lims', 'tenant-1', ['caller_tenant_id' => 'lims-tenant-9']))->getUser();
 
         self::assertInstanceOf(SlsAppUser::class, $user);
         self::assertSame('lims-client', $user->clientId);
         self::assertSame('lims', $user->app);
         self::assertSame('tenant-1', $user->tenantId);
+        self::assertSame('lims-tenant-9', $user->callerTenantId);
         self::assertSame([SlsAppUser::ROLE], $user->getRoles());
         self::assertSame('tenant-1', $this->requestStack->getCurrentRequest()->attributes->get(SlsUserTokenHandler::CLAIMS_ATTRIBUTE)['tenant_id']);
     }

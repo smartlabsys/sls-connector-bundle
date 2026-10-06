@@ -8,8 +8,8 @@ use Symfony\Component\Security\Core\User\UserInterface;
 
 /**
  * A sibling app calling this app as itself (doc 09, client credentials with `resource`): the token's
- * `sub` is the caller's OAuth client, `app` / `instance_id` name it, and `tenant_id` is the tenant
- * here it may act in. Only accepted with `sls_connector.api.accept_app_tokens: true`. Never stored.
+ * `sub` is the caller's OAuth client, `app` / `instance_id` name it, `tenant_id` is the tenant
+ * here it may act in and `callerTenantId` the caller's own tenant the call comes from (links, 10.4). Only accepted with `sls_connector.api.accept_app_tokens: true`. Never stored.
  */
 final class SlsAppUser implements UserInterface
 {
@@ -28,6 +28,8 @@ final class SlsAppUser implements UserInterface
 
     public readonly ?string $tenantId;
 
+    public readonly ?string $callerTenantId;
+
     /** @param array<string, mixed> $claims */
     public function __construct(public readonly array $claims)
     {
@@ -41,6 +43,7 @@ final class SlsAppUser implements UserInterface
         $this->instanceId     = $string('instance_id');
         $this->organizationId = $string('org_id');
         $this->tenantId       = $string('tenant_id');
+        $this->callerTenantId = $string('caller_tenant_id');
     }
 
     public function hasScope(string $scope): bool
