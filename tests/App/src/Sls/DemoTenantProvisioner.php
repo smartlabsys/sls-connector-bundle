@@ -19,13 +19,21 @@ final class DemoTenantProvisioner implements TenantProvisionerInterface, TenantP
     public function create(TenantRequest $request): TenantResult
     {
         return $this->store->update(static function (array &$data) use ($request): TenantResult {
-            foreach ($data['tenants'] ?? [] as $row) {
-                if ($row['sls_org_id'] === $request->slsOrganizationId) {
-                    return new TenantResult(self::tenant($row), false);
-                }
+            $found = self::find($data['tenants'] ?? [], $request);
+            if ($found !== null) {
+                // A contract 1 tenant moves onto the first company that asks for it.
+                $data['tenants'][$found]['sls_company_id'] ??= $request->slsCompanyId;
+
+                return new TenantResult(self::tenant($data['tenants'][$found]), false);
             }
             $id                   = 'tn_' . JsonStore::id();
-            $data['tenants'][$id] = ['tenant_id' => $id, 'sls_org_id' => $request->slsOrganizationId, 'name' => $request->name, 'status' => Tenant::STATUS_ACTIVE];
+            $data['tenants'][$id] = [
+                'tenant_id'      => $id,
+                'sls_org_id'     => $request->slsOrganizationId,
+                'sls_company_id' => $request->slsCompanyId,
+                'name'           => $request->company->name ?? $request->name,
+                'status'         => Tenant::STATUS_ACTIVE,
+            ];
 
             return new TenantResult(self::tenant($data['tenants'][$id]), true);
         });
@@ -33,13 +41,43 @@ final class DemoTenantProvisioner implements TenantProvisionerInterface, TenantP
 
     public function preview(TenantRequest $request): TenantPreview
     {
-        foreach ($this->store->read()['tenants'] ?? [] as $row) {
-            if ($row['sls_org_id'] === $request->slsOrganizationId) {
-                return new TenantPreview(TenantPreview::ACTION_EXISTING, self::tenant($row));
+        $tenants = $this->store->read()['tenants'] ?? [];
+        $found   = self::find($tenants, $request);
+
+        return $found !== null
+            ? new TenantPreview(TenantPreview::ACTION_EXISTING, self::tenant($tenants[$found]))
+            : new TenantPreview(TenantPreview::ACTION_CREATE);
+    }
+
+    /**
+     * The tenant id for this request (TenantProvisionerInterface::create() lookup order, steps 1–2):
+     * by company, else the org's tenant that has no company yet; contract 1 requests by org.
+     *
+     * @param array<string, array<string, ?string>> $tenants
+     */
+    private static function find(array $tenants, TenantRequest $request): ?string
+    {
+        if ($request->slsCompanyId === null) {
+            foreach ($tenants as $id => $row) {
+                if ($row['sls_org_id'] === $request->slsOrganizationId) {
+                    return $id;
+                }
+            }
+
+            return null;
+        }
+        foreach ($tenants as $id => $row) {
+            if (($row['sls_company_id'] ?? null) === $request->slsCompanyId) {
+                return $id;
+            }
+        }
+        foreach ($tenants as $id => $row) {
+            if ($row['sls_org_id'] === $request->slsOrganizationId && ($row['sls_company_id'] ?? null) === null) {
+                return $id;
             }
         }
 
-        return new TenantPreview(TenantPreview::ACTION_CREATE);
+        return null;
     }
 
     public function get(string $tenantId): ?Tenant
@@ -83,7 +121,7 @@ final class DemoTenantProvisioner implements TenantProvisionerInterface, TenantP
         });
     }
 
-    /** @param array<string, string> $row */
+    /** @param array<string, ?string> $row */
     private static function tenant(array $row): Tenant
     {
         return new Tenant($row['tenant_id'], $row['status'], $row['name']);

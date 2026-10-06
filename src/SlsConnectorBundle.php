@@ -20,7 +20,7 @@ use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
  */
 final class SlsConnectorBundle extends AbstractBundle
 {
-    public const CONTRACT_VERSION = 1;
+    public const CONTRACT_VERSION = 2;
 
     private const APP_KEY_PATTERN = '/^[a-z][a-z0-9_-]{1,31}$/';
 

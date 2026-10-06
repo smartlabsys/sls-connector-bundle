@@ -6,6 +6,7 @@ namespace Smartlabsys\SlsConnectorBundle\Controller;
 
 use Smartlabsys\SlsConnectorBundle\Exception\ContractException;
 use Smartlabsys\SlsConnectorBundle\Provisioning\CancellableSeedHandlerInterface;
+use Smartlabsys\SlsConnectorBundle\Provisioning\Model\CompanyDetails;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\SeedRequest;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\Tenant;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\TenantRequest;
@@ -194,6 +195,16 @@ final class ProvisioningController
             throw ContractException::badRequest('"organization.name" is required.');
         }
 
+        // Contract 2: the company. Absent from a contract 1 platform; when sent, it needs a name.
+        $companyId = self::optionalString($body['sls_company_id'] ?? null);
+        $company   = null;
+        if (array_key_exists('company', $body)) {
+            $company = is_array($body['company']) ? CompanyDetails::fromArray($body['company']) : null;
+            if ($company === null) {
+                throw ContractException::badRequest('"company.name" is required.');
+            }
+        }
+
         return new TenantRequest(
             trim($orgId),
             trim($org['name']),
@@ -201,6 +212,8 @@ final class ProvisioningController
             self::optionalString($org['locale'] ?? null),
             $body,
             is_array($body['claim'] ?? null) ? self::optionalString($body['claim']['owner_email'] ?? null) : null,
+            $companyId,
+            $company,
         );
     }
 

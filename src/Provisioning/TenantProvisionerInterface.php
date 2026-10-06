@@ -15,10 +15,15 @@ use Smartlabsys\SlsConnectorBundle\Provisioning\Model\TenantResult;
 interface TenantProvisionerInterface
 {
     /**
-     * Idempotent on `slsOrganizationId`: an org that already has a tenant gets it back (`created` false).
-     * Otherwise, when `claimOwnerEmail` is set, the app may link an existing tenant that is not yet
-     * linked to any SLS org and where a user with that e-mail is an owner (`created` true), instead
-     * of creating a duplicate.
+     * Idempotent on `slsCompanyId` (contract 2), or on `slsOrganizationId` when the request has no
+     * company (a contract 1 platform). Lookup order with a company:
+     *  1. the tenant linked to `slsCompanyId` (`created` false);
+     *  2. a tenant linked to `slsOrganizationId` but to no company yet, made before contract 2: link
+     *     it to `slsCompanyId` now (`created` false);
+     *  3. when `claimOwnerEmail` is set, an existing tenant linked to no SLS org where a user with
+     *     that e-mail is an owner (`created` true), instead of a duplicate;
+     *  4. a new tenant from `company` (`created` true).
+     * Several companies of one org get separate tenants.
      */
     public function create(TenantRequest $request): TenantResult;
 

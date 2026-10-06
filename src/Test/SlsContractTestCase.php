@@ -46,13 +46,32 @@ abstract class SlsContractTestCase extends WebTestCase
 
     // ── Hooks ────────────────────────────────────────────────────────────────
 
-    /** Body for `POST /tenants`. */
-    protected function contractTenantRequest(string $slsOrgId): array
+    /**
+     * Body for `POST /tenants`: contract 2, for the org's company `$slsCompanyId` (the org's default
+     * one when null); `$slsCompanyId === false` sends a contract 1 body, with no company.
+     */
+    protected function contractTenantRequest(string $slsOrgId, string|false|null $slsCompanyId = null): array
     {
-        return [
+        $body = [
             'sls_org_id'   => $slsOrgId,
             'organization' => ['name' => 'Contract Test ' . substr($slsOrgId, -6), 'slug' => 'contract-' . substr($slsOrgId, -6), 'locale' => 'en'],
         ];
+        if ($slsCompanyId !== false) {
+            $slsCompanyId ??= 'co-' . $slsOrgId;
+            $body['sls_company_id'] = $slsCompanyId;
+            $body['company']        = [
+                'name'                => 'Contract Company ' . substr($slsCompanyId, -6),
+                'tax_id'              => '10' . substr((string) crc32($slsCompanyId), 0, 7),
+                'registration_number' => null,
+                'public_funds_id'     => null,
+                'address'             => 'Contract Street 1',
+                'city'                => 'Novi Sad',
+                'postal_code'         => '21000',
+                'country'             => 'RS',
+            ];
+        }
+
+        return $body;
     }
 
     /** A SCIM user resource SLS would push; `$suffix` keeps it unique. */
@@ -201,7 +220,7 @@ abstract class SlsContractTestCase extends WebTestCase
         $tenantId = $created['tenant_id'];
 
         [$status, $again] = $this->call('POST', '/sls/provisioning/tenants', $token, $this->contractTenantRequest($orgId));
-        self::assertSame(200, $status, 'Creating a tenant is idempotent on sls_org_id.');
+        self::assertSame(200, $status, 'Creating a tenant is idempotent on sls_company_id.');
         self::assertSame($tenantId, $again['tenant_id']);
 
         [$status, $body] = $this->call('GET', '/sls/provisioning/tenants/' . $tenantId, $token);
@@ -237,6 +256,43 @@ abstract class SlsContractTestCase extends WebTestCase
         self::assertSame('active', $fresh['status']);
         [$status] = $this->call('DELETE', '/sls/provisioning/tenants/' . $fresh['tenant_id'], $token);
         self::assertSame(204, $status);
+    }
+
+    /** Contract 2: the company is the tenant; tenants from contract 1 move onto the first company. */
+    public function testContractCompanyTenants(): void
+    {
+        $token = $this->serviceToken(['sls:provision']);
+        $orgId = $this->uid();
+
+        [$status, $labA] = $this->call('POST', '/sls/provisioning/tenants', $token, $this->contractTenantRequest($orgId, 'co-a-' . $orgId));
+        self::assertSame(201, $status);
+        [$status, $labB] = $this->call('POST', '/sls/provisioning/tenants', $token, $this->contractTenantRequest($orgId, 'co-b-' . $orgId));
+        self::assertSame(201, $status, 'A second company of the same org gets its own tenant.');
+        self::assertNotSame($labA['tenant_id'], $labB['tenant_id']);
+        [$status, $again] = $this->call('POST', '/sls/provisioning/tenants', $token, $this->contractTenantRequest($orgId, 'co-b-' . $orgId));
+        self::assertSame(200, $status, 'Creating a tenant is idempotent on sls_company_id.');
+        self::assertSame($labB['tenant_id'], $again['tenant_id']);
+
+        // A tenant made under contract 1 (org only) is the org's first company's once it is named.
+        $legacyOrg = $this->uid();
+        [$status, $legacy] = $this->call('POST', '/sls/provisioning/tenants', $token, $this->contractTenantRequest($legacyOrg, false));
+        self::assertSame(201, $status);
+        [$status, $adopted] = $this->call('POST', '/sls/provisioning/tenants', $token, $this->contractTenantRequest($legacyOrg));
+        self::assertSame(200, $status, 'A contract 1 tenant is linked to the first company that asks for it.');
+        self::assertSame($legacy['tenant_id'], $adopted['tenant_id']);
+        [$status, $other] = $this->call('POST', '/sls/provisioning/tenants', $token, $this->contractTenantRequest($legacyOrg, 'co-x-' . $legacyOrg));
+        self::assertSame(201, $status, 'Only one company takes over the contract 1 tenant.');
+        self::assertNotSame($legacy['tenant_id'], $other['tenant_id']);
+
+        $bad = $this->contractTenantRequest($this->uid());
+        $bad['company'] = ['name' => ' '];
+        [$status] = $this->call('POST', '/sls/provisioning/tenants', $token, $bad);
+        self::assertSame(400, $status, 'A company without a name is refused.');
+
+        foreach ([$labA, $labB, $legacy, $other] as $tenant) {
+            [$status] = $this->call('DELETE', '/sls/provisioning/tenants/' . $tenant['tenant_id'], $token);
+            self::assertSame(204, $status);
+        }
     }
 
     public function testContractTenantPreview(): void
