@@ -26,6 +26,12 @@ Requirements: PHP ≥ 8.2 and Symfony 7.4 (framework, security, http-client, cac
 > (`sls.event.<type>`), `Provisioning\CompanyUpdatedHandlerInterface`, `#[SlsSibling]` with
 > `Security\SlsTenantResolverInterface`, `callSibling(connectionId:)`, and the test kit's
 > `appEvent()` / `linkToken()`. Needs SLS with 10.8 (event broker) for `emit()`.
+>
+> Also on branch `phase-10-partnerships`: partnerships (SLS 10.9) — `integration.partnership_roles`,
+> `SlsClient::directory()` / `partnerships()` / `proposePartnership()` / `redeemInvite()` /
+> `acceptPartnership()` / `declinePartnership()` / `endPartnership()` (`SlsPartnerException`),
+> `SlsAppUser::$partnershipId` / `$partnershipRole`, the discovery cache dropped on `partnership.*`,
+> and the test kit's `partnerToken()`.
 
 ## Install
 
@@ -95,6 +101,12 @@ sls_connector:
             - { scope: 'qc:requests.read', label: { en: Read requests, sr: Čitanje zahteva } }
         uses:                                # siblings' scopes this app calls with
             - { app: lims, scopes: ['lims:requests.write'] }
+        partnership_roles:                   # partnerships (SLS 10.9) — optional
+            - key: 'qc:laboratory'           # "<app key>:" prefix
+              label: { en: Laboratory, sr: Laboratorija }
+              provider_apps: [lims]          # apps that may take the role (empty = any)
+              provider_scopes: ['qc:requests.read']     # what the provider gets here: from `provides`
+              customer_scopes: ['lims:requests.write']  # what this app gets back on the provider
     endpoints: { api: /api, mcp: null }      # optional manifest endpoints
     api:
         accept_app_tokens: false             # let sibling apps call your API as themselves
@@ -324,8 +336,25 @@ $client->sendEvent('some.event', $tenantId, $data);           // any event SLS a
 - **Where the user's token comes from:** after "Sign in with Smartlab" it is kept in the session.
   `OidcLoginFlow::accessToken($session)` returns it, or null once it has expired; the user then
   signs in again.
+- **Partners** (SLS 10.9): a partnership joins a connection of your app with one of another
+  app — often in another organization — in a role. Once it is active the partner shows up in
+  `links()` (with `partnership: {id, role, side}`), `callLink()` works across organizations, and
+  the receiving app sees `SlsAppUser::$partnershipId` / `$partnershipRole`. Partners also receive
+  each other's events. The partner API calls use a plain service token with the `sls:` scopes:
+
+  ```php
+  $client->directory('qc:laboratory', $tenantId);              // providers listed for this tenant's org
+  $client->partnerships($tenantId);                            // any status
+  $client->proposePartnership('qc:laboratory', $tenantId, $connectionId); // pending (active in one org)
+  $client->redeemInvite('ABCD-EFGH-JKLM', $tenantId);          // active at once
+  $client->acceptPartnership($id); $client->declinePartnership($id); $client->endPartnership($id);
+  ```
+
+  Ask SLS to allow `sls:directory.read`, `sls:partnerships.read` and `sls:partnerships.manage`
+  for your OAuth client. `partnership.*` webhooks reach both sides and drop the cached links.
 - **Errors:**
   - A refused token request throws `SlsTokenException` (`invalid_target` / `invalid_grant`).
+  - A refused partner API call throws `SlsPartnerException` (`status`, `errors`).
   - A refused event throws `SlsEventException` (unknown tenant or job, unsupported type).
   - SLS being unreachable throws `SlsUnavailableException`.
 
@@ -378,7 +407,8 @@ webhooks and back-channel logout. You can override hooks such as `contractTenant
 `contractSupportsSeeds()` to fit your app. `Test\SlsTestTokens` is also available for your own
 tests. For your own event and sibling tests (0.3) the case offers `appEvent($type, $data, $source)`
 (a signed brokered event) and `linkToken($scopes, $tenantId, $callerTenantId)` (a sibling's token
-over a link).
+over a link), and `partnerToken($scopes, $tenantId, $role, $partnershipId)` (the same over a
+partnership, with the `partnership_id` and `role` claims).
 
 ## Developing the bundle
 

@@ -9,7 +9,8 @@ use Symfony\Component\Security\Core\User\UserInterface;
 /**
  * A sibling app calling this app as itself (doc 09, client credentials with `resource`): the token's
  * `sub` is the caller's OAuth client, `app` / `instance_id` name it, `tenant_id` is the tenant
- * here it may act in and `callerTenantId` the caller's own tenant the call comes from (links, 10.4). Only accepted with `sls_connector.api.accept_app_tokens: true`. Never stored.
+ * here it may act in and `callerTenantId` the caller's own tenant the call comes from (links, 10.4); `partnershipId` / `partnershipRole` are set when it comes
+ * over a partnership, possibly from another organization (10.9). Only accepted with `sls_connector.api.accept_app_tokens: true`. Never stored.
  */
 final class SlsAppUser implements UserInterface
 {
@@ -30,6 +31,12 @@ final class SlsAppUser implements UserInterface
 
     public readonly ?string $callerTenantId;
 
+    /** Set when the call goes over a partnership (doc 09 §2b) rather than an app link. */
+    public readonly ?string $partnershipId;
+
+    /** The partnership role (`qc:laboratory`) when {@see $partnershipId} is set. */
+    public readonly ?string $partnershipRole;
+
     /** @param array<string, mixed> $claims */
     public function __construct(public readonly array $claims)
     {
@@ -44,6 +51,8 @@ final class SlsAppUser implements UserInterface
         $this->organizationId = $string('org_id');
         $this->tenantId       = $string('tenant_id');
         $this->callerTenantId = $string('caller_tenant_id');
+        $this->partnershipId  = $string('partnership_id');
+        $this->partnershipRole = $this->partnershipId !== null ? $string('role') : null;
     }
 
     public function hasScope(string $scope): bool

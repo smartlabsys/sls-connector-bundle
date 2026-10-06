@@ -111,6 +111,22 @@ final class SlsTestTokens
     }
 
     /**
+     * A partner's token for this app (doc 09 §2b, 10.9): {@see self::linkToken()} plus the
+     * `partnership_id` and `role` claims SLS adds over an active partnership, and `org_id` of the
+     * target organization (a generated one when null — partners may sit in another org).
+     *
+     * @param string[]             $scopes the role's scopes granted to the caller
+     * @param array<string, mixed> $claims overrides (null removes a claim)
+     */
+    public function partnerToken(string $issuer, string $audience, array $scopes, string $tenantId, string $role, ?string $partnershipId = null, ?string $callerTenantId = null, string $app = 'sibling', array $claims = []): string
+    {
+        return $this->linkToken($issuer, $audience, $scopes, $tenantId, $callerTenantId, $app, $claims + [
+            'partnership_id' => $partnershipId ?? self::uuid4(),
+            'role'           => $role,
+        ]);
+    }
+
+    /**
      * A user access token for the app's API / MCP.
      *
      * @param array<string, mixed> $claims
@@ -164,6 +180,15 @@ final class SlsTestTokens
             'auth_time' => $now,
             'nonce'     => $nonce,
         ], $claims, []);
+    }
+
+    private static function uuid4(): string
+    {
+        $b    = random_bytes(16);
+        $b[6] = chr((ord($b[6]) & 0x0f) | 0x40);
+        $b[8] = chr((ord($b[8]) & 0x3f) | 0x80);
+
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($b), 4));
     }
 
     /**

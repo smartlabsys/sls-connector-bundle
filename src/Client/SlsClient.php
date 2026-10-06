@@ -17,13 +17,18 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * App → SLS calls with this instance's OAuth client (doc 05 "App → SLS", doc 09):
  * client-credentials service tokens, the token endpoint (code exchange, token exchange), UserInfo,
  * the discovery API (which sibling apps an org is connected to, which connections a tenant is
- * linked to), calls to those siblings and events sent to SLS (`seed.completed`, `user.created|updated|deleted`,
+ * linked to), the partner API (directory and partnerships, doc 09 §2b), calls to those siblings and events sent to SLS (`seed.completed`, `user.created|updated|deleted`,
  * and the app's own events SLS brokers to linked siblings, {@see self::emit()}).
  */
 class SlsClient
 {
     public const TOKEN_EXCHANGE_GRANT = 'urn:ietf:params:oauth:grant-type:token-exchange';
     public const ACCESS_TOKEN_TYPE    = 'urn:ietf:params:oauth:token-type:access_token';
+
+    /** Platform scopes for the partner API (doc 09 §2b), requested on a plain client-credentials token. */
+    public const SCOPE_DIRECTORY_READ       = 'sls:directory.read';
+    public const SCOPE_PARTNERSHIPS_READ    = 'sls:partnerships.read';
+    public const SCOPE_PARTNERSHIPS_MANAGE  = 'sls:partnerships.manage';
 
     private const DISCOVERY_TTL = 300;
 
@@ -420,6 +425,85 @@ class SlsClient
     }
 
     /**
+     * Providers listed for a partnership role that this tenant's organization may see (doc 09 §2b):
+     * `connection_id, organization_id, company_name, city, country, public_description, app,
+     * app_name, icon_url, instance_name, role, role_label`. Needs `sls:directory.read`.
+     *
+     * @return list<array<string, mixed>>
+     *
+     * @throws SlsPartnerException     SLS refused (missing scope, unknown tenant or role)
+     * @throws SlsUnavailableException SLS could not be reached or failed
+     */
+    public function directory(string $role, string $tenantId): array
+    {
+        $answer = $this->partnerCall('GET', '/directory', [self::SCOPE_DIRECTORY_READ], ['role' => $role, 'tenant_id' => $tenantId]);
+
+        return array_values(array_filter($answer['items'] ?? [], 'is_array'));
+    }
+
+    /**
+     * The tenant's partnerships, any status, each as SLS describes it (`id, role, status,
+     * initiated_by, customer, provider, can_accept, can_decline, can_end`, …; the other side's
+     * `tenant_id` only while active). Needs `sls:partnerships.read`.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function partnerships(string $tenantId): array
+    {
+        $answer = $this->partnerCall('GET', '/partnerships', [self::SCOPE_PARTNERSHIPS_READ], ['tenant_id' => $tenantId]);
+
+        return array_values(array_filter($answer['items'] ?? [], 'is_array'));
+    }
+
+    /**
+     * Propose a partnership in `$role` between this tenant's connection and `$counterpartConnectionId`
+     * (a `connection_id` from {@see self::directory()}, or one the other side gave). This tenant is
+     * the customer when the role is this app's, else the provider. Inside one organization SLS
+     * makes it active at once; otherwise it stays pending until the other side accepts.
+     * Needs `sls:partnerships.manage`.
+     *
+     * @return array<string, mixed> the partnership
+     */
+    public function proposePartnership(string $role, string $tenantId, string $counterpartConnectionId): array
+    {
+        return $this->partnerCall('POST', '/partnerships', [self::SCOPE_PARTNERSHIPS_MANAGE], [], ['role' => $role, 'tenant_id' => $tenantId, 'counterpart' => $counterpartConnectionId]);
+    }
+
+    /**
+     * Redeem an invite code (`XXXX-XXXX-XXXX`, single use, 14 days) another organization gave: the
+     * partnership becomes active with this tenant's connection. Needs `sls:partnerships.manage`.
+     *
+     * @return array<string, mixed> the partnership
+     */
+    public function redeemInvite(string $code, string $tenantId): array
+    {
+        return $this->partnerCall('POST', '/partnerships/redeem', [self::SCOPE_PARTNERSHIPS_MANAGE], [], ['code' => $code, 'tenant_id' => $tenantId]);
+    }
+
+    /**
+     * Accept a pending partnership proposed to this app's connection; `$tenantId` names another of
+     * this app's connections in the same organization to take part instead.
+     *
+     * @return array<string, mixed> the partnership
+     */
+    public function acceptPartnership(string $partnershipId, ?string $tenantId = null): array
+    {
+        return $this->partnerCall('POST', '/partnerships/' . rawurlencode($partnershipId) . '/accept', [self::SCOPE_PARTNERSHIPS_MANAGE], [], array_filter(['tenant_id' => $tenantId]));
+    }
+
+    /** @return array<string, mixed> the partnership */
+    public function declinePartnership(string $partnershipId): array
+    {
+        return $this->partnerCall('POST', '/partnerships/' . rawurlencode($partnershipId) . '/decline', [self::SCOPE_PARTNERSHIPS_MANAGE]);
+    }
+
+    /** End (or withdraw, while pending) a partnership. @return array<string, mixed> the partnership */
+    public function endPartnership(string $partnershipId): array
+    {
+        return $this->partnerCall('POST', '/partnerships/' . rawurlencode($partnershipId) . '/end', [self::SCOPE_PARTNERSHIPS_MANAGE]);
+    }
+
+    /**
      * An asynchronous seed job finished (doc 08): tells SLS now instead of waiting for its next
      * status poll. Idempotent — the event id is derived from the job.
      *
@@ -514,6 +598,50 @@ class SlsClient
         }
 
         return array_values(array_filter($data['items'] ?? [], 'is_array'));
+    }
+
+    /**
+     * Call `/api/partner/v1` with a plain client-credentials token carrying the `sls:` scopes.
+     *
+     * @param string[]                $scopes
+     * @param array<string, string>   $query
+     * @param array<string, mixed>|null $json
+     *
+     * @return array<string, mixed>
+     */
+    private function partnerCall(string $method, string $path, array $scopes, array $query = [], ?array $json = null): array
+    {
+        $options = [
+            'auth_bearer'   => $this->serviceToken($scopes),
+            'headers'       => ['Accept' => 'application/json'],
+            'timeout'       => 5,
+            'max_duration'  => 15,
+            'max_redirects' => 0,
+        ];
+        if ($query !== []) {
+            $options['query'] = $query;
+        }
+        if ($method === 'POST') {
+            $options['json'] = (object) ($json ?? []);
+        }
+        try {
+            $response = $this->httpClient->request($method, $this->metadata->issuer() . '/api/partner/v1' . $path, $options);
+            $status   = $response->getStatusCode();
+            $answer   = $response->toArray(false);
+        } catch (ExceptionInterface $e) {
+            throw new SlsUnavailableException('SLS partner API failed: ' . $e->getMessage(), 0, $e);
+        }
+        if ($status >= 500) {
+            throw new SlsUnavailableException(sprintf('SLS partner API answered HTTP %d.', $status));
+        }
+        if ($status !== 200) {
+            throw new SlsPartnerException($status, array_map(
+                static fn (mixed $e): string => is_array($e) ? (string) ($e['message'] ?? '') : (string) $e,
+                (array) ($answer['errors'] ?? []),
+            ));
+        }
+
+        return $answer;
     }
 
     private function discoveryCacheKey(string $organizationId): string

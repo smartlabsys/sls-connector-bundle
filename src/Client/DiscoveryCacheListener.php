@@ -8,7 +8,8 @@ use Smartlabsys\SlsConnectorBundle\Webhook\SlsWebhookEvent;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 
 /**
- * `connection.*` and `link.*` webhooks mean the org's sibling list (or a link to one) changed: drop
+ * `connection.*`, `link.*` and `partnership.*` webhooks mean the org's sibling list (or a link or
+ * partner) changed: drop
  * the cached discovery answers so the next {@see SlsClient::connections()} and
  * {@see SlsClient::links()} ask SLS again.
  */
@@ -19,7 +20,7 @@ final class DiscoveryCacheListener
 
     public function __invoke(SlsWebhookEvent $event): void
     {
-        if (!str_starts_with($event->type, 'connection.') && !str_starts_with($event->type, 'link.')) {
+        if (!str_starts_with($event->type, 'connection.') && !str_starts_with($event->type, 'link.') && !str_starts_with($event->type, 'partnership.')) {
             return;
         }
         if ($event->organizationId !== null) {

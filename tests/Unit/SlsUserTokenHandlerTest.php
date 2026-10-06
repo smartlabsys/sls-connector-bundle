@@ -76,6 +76,21 @@ final class SlsUserTokenHandlerTest extends TestCase
         self::assertSame('tenant-1', $this->requestStack->getCurrentRequest()->attributes->get(SlsUserTokenHandler::CLAIMS_ATTRIBUTE)['tenant_id']);
     }
 
+    public function testPartnerTokenCarriesThePartnership(): void
+    {
+        $user = $this->handler(true)->getUserBadgeFrom($this->tokens->partnerToken(self::ISS, self::AUD, ['qc:requests.read'], 'tenant-1', 'qc:laboratory', '11111111-1111-4111-8111-111111111111', 'lims-tenant-9', 'lims'))->getUser();
+
+        self::assertInstanceOf(SlsAppUser::class, $user);
+        self::assertSame('11111111-1111-4111-8111-111111111111', $user->partnershipId);
+        self::assertSame('qc:laboratory', $user->partnershipRole);
+        self::assertSame('lims-tenant-9', $user->callerTenantId);
+        self::assertSame(['qc:requests.read'], $user->scopes);
+
+        $linked = $this->handler(true)->getUserBadgeFrom($this->tokens->linkToken(self::ISS, self::AUD, [], 'tenant-1', null, 'lims', ['role' => 'x']))->getUser();
+        self::assertNull($linked->partnershipId);
+        self::assertNull($linked->partnershipRole, 'no role without a partnership');
+    }
+
     public function testServiceTokenAlwaysRefused(): void
     {
         $this->expectException(BadCredentialsException::class);

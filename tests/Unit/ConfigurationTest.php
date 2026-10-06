@@ -78,7 +78,7 @@ final class ConfigurationTest extends TestCase
     public function testIntegrationIsEmptyByDefaultAndReachesTheManifest(): void
     {
         $config = $this->load($this->config())->getParameter('sls_connector.config');
-        self::assertSame(['provides' => [], 'uses' => []], $config['integration']);
+        self::assertSame(['provides' => [], 'uses' => [], 'partnership_roles' => []], $config['integration']);
 
         $config = $this->load($this->config(['integration' => [
             'provides' => [['scope' => 'demo:orders.read', 'label' => ['en' => 'Read orders']]],
@@ -116,6 +116,75 @@ final class ConfigurationTest extends TestCase
         $this->expectException(InvalidConfigurationException::class);
         $this->expectExceptionMessage('Used scope "lims:requests.read"');
         $this->load($this->config(['integration' => ['uses' => [['app' => 'qc', 'scopes' => ['lims:requests.read']]]]]));
+    }
+
+    public function testPartnershipRolesReachTheManifest(): void
+    {
+        $config = $this->load($this->config())->getParameter('sls_connector.config');
+        self::assertSame([], $config['integration']['partnership_roles']);
+        self::assertArrayNotHasKey('partnership_roles', (new ManifestBuilder($config))->build()['integration'], 'not emitted when empty');
+
+        $config = $this->load($this->config(['integration' => self::partnerIntegration()]))->getParameter('sls_connector.config');
+        self::assertSame([[
+            'key'             => 'demo:laboratory',
+            'label'           => ['en' => 'Laboratory', 'sr' => 'Laboratorija'],
+            'provider_apps'   => ['lims'],
+            'provider_scopes' => ['demo:orders.read'],
+            'customer_scopes' => ['lims:requests.read'],
+        ]], (new ManifestBuilder($config))->build()['integration']['partnership_roles']);
+    }
+
+    public function testRejectsPartnershipRoleOfAnotherApp(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('Partnership role key "qc:laboratory"');
+        $this->load($this->config(['integration' => self::partnerIntegration(['key' => 'qc:laboratory'])]));
+    }
+
+    public function testRejectsProviderScopeNotProvided(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('Provider scope "demo:orders.write"');
+        $this->load($this->config(['integration' => self::partnerIntegration(['provider_scopes' => ['demo:orders.write']])]));
+    }
+
+    public function testRejectsPartnershipRoleWithoutProviderScopes(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->load($this->config(['integration' => self::partnerIntegration(['provider_scopes' => []])]));
+    }
+
+    public function testRejectsOwnScopeAsCustomerScope(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('Customer scope "demo:orders.read"');
+        $this->load($this->config(['integration' => self::partnerIntegration(['customer_scopes' => ['demo:orders.read']])]));
+    }
+
+    public function testRejectsCustomerScopeOfAnAppNotAllowedToProvide(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('Customer scope "financial:invoices.read"');
+        $this->load($this->config(['integration' => self::partnerIntegration(['customer_scopes' => ['financial:invoices.read']])]));
+    }
+
+    /**
+     * @param array<string, mixed> $role overrides
+     *
+     * @return array<string, mixed>
+     */
+    private static function partnerIntegration(array $role = []): array
+    {
+        return [
+            'provides'          => [['scope' => 'demo:orders.read', 'label' => ['en' => 'Read orders']]],
+            'partnership_roles' => [$role + [
+                'key'             => 'demo:laboratory',
+                'label'           => ['en' => 'Laboratory', 'sr' => 'Laboratorija'],
+                'provider_apps'   => ['lims'],
+                'provider_scopes' => ['demo:orders.read'],
+                'customer_scopes' => ['lims:requests.read'],
+            ]],
+        ];
     }
 
     public function testEventsReachTheConfig(): void

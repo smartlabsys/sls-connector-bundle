@@ -66,7 +66,16 @@ final class ManifestBuilder
                     'app'    => $used['app'],
                     'scopes' => array_values($used['scopes']),
                 ], $this->config['integration']['uses']),
-            ],
+            ] + ($this->config['integration']['partnership_roles'] === [] ? [] : [
+                'partnership_roles' => array_map(static fn (array $role): array => array_filter([
+                    'key'             => $role['key'],
+                    'label'           => $role['label'],
+                    'description'     => $role['description'] ?: null,
+                    'provider_apps'   => array_values($role['provider_apps']),
+                    'provider_scopes' => array_values($role['provider_scopes']),
+                    'customer_scopes' => array_values($role['customer_scopes']),
+                ], static fn ($v): bool => $v !== null), $this->config['integration']['partnership_roles']),
+            ]),
             'events'           => [
                 'emits'    => array_values($this->config['events']['emits']),
                 'consumes' => array_values($this->config['events']['consumes']),

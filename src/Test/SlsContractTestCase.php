@@ -601,6 +601,17 @@ abstract class SlsContractTestCase extends WebTestCase
         return $this->tokens->linkToken($this->issuer(), $this->audience(), $scopes, $tenantId, $callerTenantId, $app);
     }
 
+    /**
+     * A partner app's token for this app (doc 09 §2b): {@see self::linkToken()} plus the
+     * `partnership_id` and `role` claims.
+     *
+     * @param string[] $scopes
+     */
+    protected function partnerToken(array $scopes, string $tenantId, string $role, ?string $partnershipId = null, ?string $callerTenantId = null, string $app = 'sibling'): string
+    {
+        return $this->tokens->partnerToken($this->issuer(), $this->audience(), $scopes, $tenantId, $role, $partnershipId, $callerTenantId, $app);
+    }
+
     /** @param string[] $scopes */
     protected function serviceToken(array $scopes, ?string $tenantId = null): string
     {

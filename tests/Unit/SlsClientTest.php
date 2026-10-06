@@ -7,6 +7,7 @@ namespace Smartlabsys\SlsConnectorBundle\Tests\Unit;
 use PHPUnit\Framework\TestCase;
 use Smartlabsys\SlsConnectorBundle\Client\SlsClient;
 use Smartlabsys\SlsConnectorBundle\Client\SlsEventException;
+use Smartlabsys\SlsConnectorBundle\Client\SlsPartnerException;
 use Smartlabsys\SlsConnectorBundle\Client\SlsTokenException;
 use Smartlabsys\SlsConnectorBundle\Exception\SlsUnavailableException;
 use Smartlabsys\SlsConnectorBundle\Jwt\SlsMetadata;
@@ -438,6 +439,84 @@ final class SlsClientTest extends TestCase
 
         self::assertSame('https://qc.test/api/requests', end($this->requests)['url']);
         self::assertStringContainsString('caller_tenant_id=tenant-b', $this->requestsTo('/oauth2/token')[1]['options']['body']);
+    }
+
+    public function testDirectoryUsesAPlainTokenWithTheDirectoryScope(): void
+    {
+        $entry  = ['connection_id' => 'conn-lab', 'company_name' => 'Lab B', 'role' => 'qc:laboratory'];
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'dir', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [$entry]]),
+        ]);
+
+        self::assertSame([$entry], $client->directory('qc:laboratory', 'tenant-a'));
+        $token = $this->requestsTo('/oauth2/token')[0]['options']['body'];
+        self::assertStringContainsString('scope=sls%3Adirectory.read', $token);
+        self::assertStringNotContainsString('target_connection', $token);
+        self::assertStringNotContainsString('resource', $token);
+        $call = $this->requestsTo('/api/partner/v1/directory')[0];
+        self::assertSame('GET', $call['method']);
+        self::assertContains('Authorization: Bearer dir', $call['options']['headers']);
+        parse_str((string) parse_url($call['url'], PHP_URL_QUERY), $query);
+        self::assertSame(['role' => 'qc:laboratory', 'tenant_id' => 'tenant-a'], $query);
+    }
+
+    public function testPartnershipsList(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'rd', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [['id' => 'p-1', 'status' => 'active']]]),
+        ]);
+
+        self::assertSame([['id' => 'p-1', 'status' => 'active']], $client->partnerships('tenant-a'));
+        self::assertStringContainsString('scope=sls%3Apartnerships.read', $this->requestsTo('/oauth2/token')[0]['options']['body']);
+    }
+
+    public function testProposeAndRedeem(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'mg', 'expires_in' => 300]),
+            new JsonMockResponse(['id' => 'p-1', 'status' => 'pending']),
+            new JsonMockResponse(['id' => 'p-2', 'status' => 'active']),
+            new JsonMockResponse(['id' => 'p-1', 'status' => 'ended']),
+        ]);
+
+        self::assertSame('pending', $client->proposePartnership('qc:laboratory', 'tenant-a', 'conn-lab')['status']);
+        self::assertSame('active', $client->redeemInvite('ABCD-EFGH-JKLM', 'tenant-a')['status']);
+        self::assertSame('ended', $client->endPartnership('p-1')['status']);
+
+        self::assertStringContainsString('scope=sls%3Apartnerships.manage', $this->requestsTo('/oauth2/token')[0]['options']['body']);
+        self::assertCount(1, $this->requestsTo('/oauth2/token'), 'one cached token');
+        self::assertSame(['role' => 'qc:laboratory', 'tenant_id' => 'tenant-a', 'counterpart' => 'conn-lab'], json_decode($this->requestsTo('/api/partner/v1/partnerships')[0]['options']['body'], true));
+        self::assertSame(['code' => 'ABCD-EFGH-JKLM', 'tenant_id' => 'tenant-a'], json_decode($this->requestsTo('/api/partner/v1/partnerships/redeem')[0]['options']['body'], true));
+        self::assertSame('POST', $this->requestsTo('/api/partner/v1/partnerships/p-1/end')[0]['method']);
+    }
+
+    public function testRefusedPartnerCallBecomesSlsPartnerException(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'mg', 'expires_in' => 300]),
+            new JsonMockResponse(['errors' => ['This invite code is not valid.']], ['http_code' => 400]),
+        ]);
+
+        try {
+            $client->redeemInvite('NOPE', 'tenant-a');
+            self::fail('Expected SlsPartnerException');
+        } catch (SlsPartnerException $e) {
+            self::assertSame(400, $e->status);
+            self::assertSame(['This invite code is not valid.'], $e->errors);
+        }
+    }
+
+    public function testFailingPartnerApiIsUnavailable(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'rd', 'expires_in' => 300]),
+            new MockResponse('', ['http_code' => 502]),
+        ]);
+
+        $this->expectException(SlsUnavailableException::class);
+        $client->partnerships('tenant-a');
     }
 
     public function testUnreachableSls(): void

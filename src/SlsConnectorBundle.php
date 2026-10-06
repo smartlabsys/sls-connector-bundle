@@ -121,6 +121,19 @@ final class SlsConnectorBundle extends AbstractBundle
                                 ->end()
                             ->end()
                         ->end()
+                        ->arrayNode('partnership_roles')
+                            ->info('Partnership roles (doc 09 §2b): another connection works for this app\'s tenant. provider_scopes come from `provides`; customer_scopes are the provider apps\' scopes this app gets back.')
+                            ->arrayPrototype()
+                                ->children()
+                                    ->scalarNode('key')->isRequired()->cannotBeEmpty()->end()
+                                    ->append($this->labelNode('label', true))
+                                    ->append($this->labelNode('description', false))
+                                    ->arrayNode('provider_apps')->scalarPrototype()->end()->end()
+                                    ->arrayNode('provider_scopes')->isRequired()->requiresAtLeastOneElement()->scalarPrototype()->end()->end()
+                                    ->arrayNode('customer_scopes')->scalarPrototype()->end()->end()
+                                ->end()
+                            ->end()
+                        ->end()
                     ->end()
                 ->end()
                 ->arrayNode('endpoints')
@@ -170,6 +183,31 @@ final class SlsConnectorBundle extends AbstractBundle
                         foreach ($used['scopes'] as $scope) {
                             if (!self::isScope($scope, $used['app'])) {
                                 throw new \InvalidArgumentException(sprintf('Used scope "%s" must look like "%s:resource.action".', $scope, $used['app']));
+                            }
+                        }
+                    }
+                    $provides = array_column($config['integration']['provides'], 'scope');
+                    $roleKeys = [];
+                    foreach ($config['integration']['partnership_roles'] as $role) {
+                        if (!preg_match('/^' . preg_quote($config['app']['key'], '/') . ':[a-z0-9][a-z0-9_.-]{0,31}$/', $role['key']) || isset($roleKeys[$role['key']])) {
+                            throw new \InvalidArgumentException(sprintf('Partnership role key "%s" must be unique and look like "%sname".', $role['key'], $prefix));
+                        }
+                        $roleKeys[$role['key']] = true;
+                        foreach ($role['provider_apps'] as $app) {
+                            if (!is_string($app) || !preg_match(self::APP_KEY_PATTERN, $app)) {
+                                throw new \InvalidArgumentException(sprintf('"%s" in partnership role "%s" provider_apps is not an app key.', (string) $app, $role['key']));
+                            }
+                        }
+                        foreach ($role['provider_scopes'] as $scope) {
+                            if (!in_array($scope, $provides, true)) {
+                                throw new \InvalidArgumentException(sprintf('Provider scope "%s" of partnership role "%s" must be one of integration.provides.', $scope, $role['key']));
+                            }
+                        }
+                        foreach ($role['customer_scopes'] as $scope) {
+                            $app = is_string($scope) ? strstr($scope, ':', true) : false;
+                            if ($app === false || $app === $config['app']['key'] || !self::isScope($scope, $app)
+                                || ($role['provider_apps'] !== [] && !in_array($app, $role['provider_apps'], true))) {
+                                throw new \InvalidArgumentException(sprintf('Customer scope "%s" of partnership role "%s" must be a scope of a provider app.', (string) $scope, $role['key']));
                             }
                         }
                     }
