@@ -15,6 +15,7 @@ use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
 
 /**
  * "Sign in with Smartlab" start + OIDC Back-Channel Logout receiver (doc 05 §2). The callback
@@ -27,12 +28,16 @@ final class OidcController
         private TokenValidator $validator,
         private LogoutRegistry $logoutRegistry,
         private ?LoggerInterface $logger = null,
+        private ?TokenStorageInterface $tokenStorage = null,
     ) {}
 
     #[Route('/sls/oidc/login', name: 'sls_connector.oidc_login', methods: ['GET'])]
     public function login(Request $request): Response
     {
         $prompt = $request->query->get('prompt');
+        if ($prompt !== 'none') {
+            $this->signOutLocally($request);
+        }
 
         return new RedirectResponse($this->flow->authorizationUrl(
             $request->getSession(),
@@ -75,5 +80,25 @@ final class OidcController
         }
 
         return new JsonResponse(null, 200, $headers);
+    }
+
+    /**
+     * Starting a sign-in replaces whoever is signed in here — e.g. a launcher tile for another
+     * company — so drop the local session first: a cancelled or refused sign-in then leaves nobody
+     * signed in rather than the previous user, and nothing of theirs carries over. Not a logout
+     * (no LogoutEvent): the SLS session stays, so the sign-in goes straight through.
+     */
+    private function signOutLocally(Request $request): void
+    {
+        if ($this->tokenStorage?->getToken() === null || !$request->hasSession()) {
+            return;
+        }
+        $session = $request->getSession();
+        $locale  = $session->get('_locale');
+        $this->tokenStorage->setToken(null);
+        $session->invalidate();
+        if ($locale !== null) {
+            $session->set('_locale', $locale);
+        }
     }
 }

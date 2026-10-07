@@ -81,6 +81,39 @@ final class DemoAppSecurityTest extends WebTestCase
         self::assertSelectorExists('#signed-out');
     }
 
+    public function testStartingASignInDropsTheCurrentUser(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->installKeys();
+
+        $signIn = function (string $sub) use ($client): void {
+            $client->request('GET', '/sls/oidc/login');
+            parse_str((string) parse_url((string) $client->getResponse()->headers->get('Location'), PHP_URL_QUERY), $query);
+            $idToken = $this->tokens->idToken(self::ISSUER, self::CLIENT_ID, $sub, $query['nonce'], ['email' => $sub . '@example.com', 'email_verified' => true]);
+            $this->mockSls(['token' => static fn (): JsonMockResponse => new JsonMockResponse(['access_token' => 'at', 'expires_in' => 300, 'id_token' => $idToken])]);
+            $client->request('GET', '/sls/oidc/callback?code=abc&state=' . rawurlencode($query['state']));
+        };
+        $first  = 'sub-a-' . bin2hex(random_bytes(3));
+        $second = 'sub-b-' . bin2hex(random_bytes(3));
+
+        $signIn($first);
+        $client->request('GET', '/');
+        self::assertSelectorTextContains('#signed-in', $first . '@example.com');
+
+        // Another launcher tile: the previous user is gone even if this sign-in is cancelled.
+        $client->request('GET', '/sls/oidc/login');
+        parse_str((string) parse_url((string) $client->getResponse()->headers->get('Location'), PHP_URL_QUERY), $query);
+        $client->request('GET', '/sls/oidc/callback?error=access_denied&state=' . rawurlencode($query['state']));
+        $client->request('GET', '/');
+        self::assertSelectorExists('#signed-out');
+
+        $signIn($first);
+        $signIn($second);
+        $client->request('GET', '/');
+        self::assertSelectorTextContains('#signed-in', $second . '@example.com');
+    }
+
     public function testCallbackErrorsAndRpLogout(): void
     {
         $client = static::createClient();
