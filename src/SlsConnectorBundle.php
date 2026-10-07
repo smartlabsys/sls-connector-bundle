@@ -154,6 +154,7 @@ final class SlsConnectorBundle extends AbstractBundle
                     ->addDefaultsIfNotSet()
                     ->children()
                         ->booleanNode('accept_app_tokens')->defaultFalse()->info('Accept sibling apps calling as themselves (SlsAppUser, ROLE_SLS_APP) on the user-token firewall.')->end()
+                        ->booleanNode('introspect_partner_tokens')->defaultTrue()->info('Check tokens with a partnership_id (partners, often from another organization) with SLS token introspection, cached up to 60 s; refused while SLS cannot be asked (0.3.3).')->end()
                     ->end()
                 ->end()
                 ->arrayNode('oidc')
@@ -249,7 +250,8 @@ final class SlsConnectorBundle extends AbstractBundle
             ->set('sls_connector.oidc', $config['oidc'])
             ->set('sls_connector.oidc.scopes', $config['oidc']['scopes'])
             ->set('sls_connector.oidc.rp_logout', $config['oidc']['rp_logout'])
-            ->set('sls_connector.api.accept_app_tokens', $config['api']['accept_app_tokens']);
+            ->set('sls_connector.api.accept_app_tokens', $config['api']['accept_app_tokens'])
+            ->set('sls_connector.api.introspect_partner_tokens', $config['api']['introspect_partner_tokens']);
 
         $container->import('../config/services.php');
 

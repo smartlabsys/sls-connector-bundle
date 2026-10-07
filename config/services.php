@@ -22,6 +22,7 @@ return static function (ContainerConfigurator $container): void {
             ->bind('string $scopes', '%sls_connector.oidc.scopes%')
             ->bind('bool $enabled', '%sls_connector.oidc.rp_logout%')
             ->bind('bool $acceptAppTokens', '%sls_connector.api.accept_app_tokens%')
+            ->bind('bool $introspectPartnerTokens', '%sls_connector.api.introspect_partner_tokens%')
             ->bind(CacheItemPoolInterface::class, service('sls_connector.cache'))
             ->bind(HttpClientInterface::class, service('sls_connector.http_client'));
 

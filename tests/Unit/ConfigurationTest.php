@@ -24,6 +24,8 @@ final class ConfigurationTest extends TestCase
         self::assertTrue($config['oidc']['rp_logout']);
         self::assertSame(['api' => '/api', 'mcp' => null], $config['endpoints']);
         self::assertTrue($container->hasAlias('sls_connector.cache'));
+        self::assertTrue($container->getParameter('sls_connector.api.introspect_partner_tokens'), 'partner tokens are introspected by default (0.3.3)');
+        self::assertFalse($this->load($this->config(['api' => ['introspect_partner_tokens' => false]]))->getParameter('sls_connector.api.introspect_partner_tokens'));
     }
 
     public function testRegistersExtensionPointAutoconfiguration(): void

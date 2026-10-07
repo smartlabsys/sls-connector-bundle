@@ -43,6 +43,9 @@ class SlsClient
 
     /**
      * A client-credentials access token for this app, cached until 30 s before it expires.
+     * Tokens for a sibling app are also dropped on `link.*`, `connection.*` and `partnership.*`
+     * webhooks for the calling tenant or org ({@see self::forgetSiblingTokens()}, 0.3.3), so a
+     * partnership that ended doesn't leave a cached token behind.
      *
      * For a sibling app SLS needs the connection the call is for: `$targetConnectionId` (a
      * `connection_id` from discovery, doc 09 10.4), or `$resource` (RFC 8707) with the org whose
@@ -66,7 +69,8 @@ class SlsClient
             throw new \InvalidArgumentException('A service token for a sibling app needs the organization id or the target connection.');
         }
         $sibling = $resource !== null || $targetConnectionId !== null;
-        $item    = $this->cache->getItem('sls_connector.service_token.' . sha1(implode(' ', $scopes) . '|' . $resource . '|' . $organizationId . '|' . $targetConnectionId . '|' . $callerTenantId));
+        $item    = $this->cache->getItem('sls_connector.service_token.' . sha1(implode(' ', $scopes) . '|' . $resource . '|' . $organizationId . '|' . $targetConnectionId . '|' . $callerTenantId
+            . ($sibling ? '|' . $this->siblingTokenGeneration($organizationId, $callerTenantId) : '')));
         if ($item->isHit()) {
             return $item->get();
         }
@@ -307,6 +311,57 @@ class SlsClient
     public function forgetLinks(string $tenantId): void
     {
         $this->cache->deleteItem($this->linksCacheKey($tenantId));
+    }
+
+    /**
+     * Drop the cached service tokens for sibling apps (0.3.3): those this tenant called with
+     * (`$callerTenantId` / {@see self::callLink()}) and those for this org (`$organizationId` /
+     * {@see self::callSibling()} without a tenant). Sibling tokens that name neither are dropped
+     * every time. Plain tokens for SLS itself are kept. The next call asks SLS again, which
+     * refuses a target the tenant is no longer linked or partnered to.
+     */
+    public function forgetSiblingTokens(?string $tenantId = null, ?string $organizationId = null): void
+    {
+        $generations = new CacheGenerations($this->cache);
+        $generations->bump('service_token.any');
+        if ($tenantId !== null) {
+            $generations->bump('service_token.tenant.' . $tenantId);
+        }
+        if ($organizationId !== null) {
+            $generations->bump('service_token.org.' . $organizationId);
+        }
+    }
+
+    /**
+     * RFC 7662: ask SLS whether an access token is still live, authenticated as this app's client
+     * (0.3.3). SLS answers `active: false` for a token it revoked, e.g. one issued under a
+     * partnership that has since ended.
+     *
+     * @return array<string, mixed> SLS's answer (`active`, and `client_id`, `exp`, `jti`, … when active)
+     *
+     * @throws SlsUnavailableException SLS could not be reached, refused this client, or answered oddly
+     */
+    public function introspect(#[\SensitiveParameter] string $token): array
+    {
+        try {
+            $response = $this->httpClient->request('POST', $this->metadata->endpoint('introspection_endpoint'), [
+                'auth_basic'    => [rawurlencode($this->clientId), rawurlencode($this->clientSecret)],
+                'headers'       => ['Accept' => 'application/json'],
+                'body'          => ['token' => $token, 'token_type_hint' => 'access_token'],
+                'timeout'       => 3,
+                'max_duration'  => 5,
+                'max_redirects' => 0,
+            ]);
+            $status = $response->getStatusCode();
+            $data   = $response->toArray(false);
+        } catch (ExceptionInterface $e) {
+            throw new SlsUnavailableException('The SLS introspection endpoint could not be reached: ' . $e->getMessage(), 0, $e);
+        }
+        if ($status !== 200 || !is_bool($data['active'] ?? null)) {
+            throw new SlsUnavailableException(sprintf('SLS token introspection answered HTTP %d%s.', $status, isset($data['error']) ? ' (' . (string) $data['error'] . ')' : ''));
+        }
+
+        return $data;
     }
 
     /**
@@ -730,6 +785,21 @@ class SlsClient
         }
 
         return $answer;
+    }
+
+    /** The generation markers a sibling token's cache key carries, {@see self::forgetSiblingTokens()}. */
+    private function siblingTokenGeneration(?string $organizationId, ?string $callerTenantId): string
+    {
+        $generations = new CacheGenerations($this->cache);
+        $markers     = [];
+        if ($callerTenantId !== null) {
+            $markers[] = $generations->current('service_token.tenant.' . $callerTenantId);
+        }
+        if ($organizationId !== null) {
+            $markers[] = $generations->current('service_token.org.' . $organizationId);
+        }
+
+        return $markers === [] ? $generations->current('service_token.any') : implode('.', $markers);
     }
 
     private function discoveryCacheKey(string $organizationId): string

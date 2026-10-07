@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Smartlabsys\SlsConnectorBundle\Test;
 
 use Smartlabsys\SlsConnectorBundle\Scim\ScimPatch;
+use Smartlabsys\SlsConnectorBundle\Security\PartnerTokenIntrospector;
 use Smartlabsys\SlsConnectorBundle\Scim\Model\ScimUser;
 use Smartlabsys\SlsConnectorBundle\SlsConnectorBundle;
 use Smartlabsys\SlsConnectorBundle\Webhook\WebhookSignature;
@@ -609,7 +610,24 @@ abstract class SlsContractTestCase extends WebTestCase
      */
     protected function partnerToken(array $scopes, string $tenantId, string $role, ?string $partnershipId = null, ?string $callerTenantId = null, string $app = 'sibling'): string
     {
-        return $this->tokens->partnerToken($this->issuer(), $this->audience(), $scopes, $tenantId, $role, $partnershipId, $callerTenantId, $app);
+        $token = $this->tokens->partnerToken($this->issuer(), $this->audience(), $scopes, $tenantId, $role, $partnershipId, $callerTenantId, $app);
+        $this->rememberPartnerToken($token, true);
+
+        return $token;
+    }
+
+    /**
+     * Record SLS's introspection answer for a partner token (0.3.3), so the app accepts
+     * (`$active`) or refuses it without asking SLS. {@see self::partnerToken()} records `true`.
+     * Tokens minted elsewhere (e.g. `SlsTestTokens::appToken()` with a `partnership_id`) need this
+     * too, or `sls_connector.api.introspect_partner_tokens: false` in the test environment.
+     */
+    protected function rememberPartnerToken(string $token, bool $active): void
+    {
+        $container = static::getContainer();
+        if ($container->has(PartnerTokenIntrospector::class)) {
+            $container->get(PartnerTokenIntrospector::class)->remember($token, $active);
+        }
     }
 
     /** @param string[] $scopes */

@@ -21,6 +21,10 @@ use Symfony\Component\Security\Http\Authenticator\Passport\Badge\UserBadge;
  *
  * Tokens a sibling app got for itself (`sub` = its `client_id`, doc 09) become an {@see SlsAppUser}
  * when `sls_connector.api.accept_app_tokens` is on, and are refused otherwise.
+ *
+ * A token with a `partnership_id` (a partner's app or user token) is also checked with SLS's
+ * introspection, {@see PartnerTokenIntrospector} (0.3.3): refused once SLS revoked it (the
+ * partnership ended), and refused while SLS can't be asked (fail closed).
  */
 final class SlsUserTokenHandler implements AccessTokenHandlerInterface
 {
@@ -32,6 +36,7 @@ final class SlsUserTokenHandler implements AccessTokenHandlerInterface
         private ?SlsUserResolverInterface $resolver = null,
         private ?LoggerInterface $logger = null,
         private bool $acceptAppTokens = false,
+        private ?PartnerTokenIntrospector $introspector = null,
     ) {}
 
     public function getUserBadgeFrom(#[\SensitiveParameter] string $accessToken): UserBadge
@@ -45,6 +50,22 @@ final class SlsUserTokenHandler implements AccessTokenHandlerInterface
         }
         if ($claims['sub'] === SlsServiceTokenHandler::SUBJECT) {
             throw new BadCredentialsException('SLS service tokens are not accepted here.');
+        }
+        if ($this->introspector?->applies($claims)) {
+            if (isset($claims['client_id']) && $claims['sub'] === $claims['client_id'] && !$this->acceptAppTokens) {
+                throw new BadCredentialsException('App tokens are not accepted here.');
+            }
+            try {
+                $this->introspector->assertActive($accessToken, $claims);
+            } catch (InvalidTokenException $e) {
+                $this->logger?->info('SLS partner token rejected: {reason}', ['reason' => $e->getMessage(), 'partnership_id' => $claims['partnership_id']]);
+
+                throw new BadCredentialsException('This partner token is no longer valid.', 0, $e);
+            } catch (SlsUnavailableException $e) {
+                $this->logger?->warning('SLS partner token refused, SLS introspection unavailable: {reason}', ['reason' => $e->getMessage(), 'partnership_id' => $claims['partnership_id']]);
+
+                throw new BadCredentialsException('The partner token could not be checked with SLS.', 0, $e);
+            }
         }
         if (isset($claims['client_id']) && $claims['sub'] === $claims['client_id']) {
             if (!$this->acceptAppTokens) {

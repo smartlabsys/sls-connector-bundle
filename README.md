@@ -45,11 +45,29 @@ Requirements: PHP ≥ 8.2 and Symfony 7.4 (framework, security, http-client, cac
 > whole webhook body); `CompanyDetails::wasSent()` / `toArray(onlySent: true)` to tell a left-out
 > key from a blank one.
 
+> **0.3.3.** Partnership and claim hardening, backward compatible:
+> - **Sibling tokens dropped on webhooks.** Cached sibling / link tokens (`callSibling()`,
+>   `callLink()`) are dropped on `connection.*`, `link.*` and `partnership.*` webhooks (including
+>   `partnership.ended` / `.declined`), per tenant or org, so a removed link or ended partnership
+>   stops being used at once instead of when the token expires (`SlsClient::forgetSiblingTokens()`).
+> - **Partner tokens checked with SLS.** A token with a `partnership_id` claim (a partner's app or
+>   exchanged user token) is checked with SLS's token introspection (RFC 7662,
+>   `SlsClient::introspect()`, your existing client credentials) before the `api` firewall accepts
+>   it; the answer is cached per token for 60 s at most (never past `exp`) and dropped on
+>   `partnership.*` webhooks. **Fail closed:** while SLS can't be reached, partner tokens are refused
+>   (401). Same-org link tokens are still validated locally only. Option
+>   `api.introspect_partner_tokens` (default `true`).
+> - **Claim code out of the URL.** `Provisioning\ClaimHandback` hands the `/sls/claim` code back to
+>   SLS with an auto-submitting POST form instead of a redirect; needs SLS with the POST claim
+>   callback (it still takes the old redirect, deprecated).
+> - Test kit: `partnerToken()` records the token as active; `rememberPartnerToken($token, $active)`
+>   and `PartnerTokenIntrospector::remember()` for tokens minted elsewhere.
+
 ## Install
 
 ```bash
 composer config repositories.sls-connector vcs https://github.com/smartlabsys/sls-connector-bundle
-composer require smartlabsys/sls-connector-bundle:^0.1
+composer require smartlabsys/sls-connector-bundle:^0.3
 ```
 
 To work on the bundle and an app side by side, point the app at a local checkout instead
@@ -124,6 +142,7 @@ sls_connector:
         claim_code: false                    # true: SLS may claim a standalone company with a claim code
     api:
         accept_app_tokens: false             # let sibling apps call your API as themselves
+        introspect_partner_tokens: true      # check partner tokens with SLS (0.3.3; fail closed)
     oidc:
         scopes: 'openid profile email org apps'
         default_target_path: /
@@ -181,6 +200,16 @@ the `api` firewall as a `Security\SlsAppUser` (`ROLE_SLS_APP`, with `app`, `inst
 `organizationId`, `tenantId` and `callerTenantId`, the caller's own tenant). Otherwise such
 tokens are refused. SLS service tokens are
 always refused there.
+
+**Partner tokens (0.3.3).** A token with a `partnership_id` claim — a partner's app token or a
+user token exchanged over a partnership — is also checked with SLS's token introspection
+(`introspection_endpoint`, HTTP Basic with your `client_id` / `client_secret`; nothing new to
+configure), because its signature alone doesn't say the partnership is still active: SLS revokes
+the tokens of a partnership when it ends. The answer is cached per token (`jti`) for 60 s at most,
+never past the token's `exp`, and dropped on `partnership.*` webhooks. If SLS can't be reached the
+token is refused (fail closed: partner tokens cross organizations). Same-org link tokens and the
+app's own users' tokens are not introspected. Turn it off with
+`api.introspect_partner_tokens: false`.
 
 **Link scopes.** The token carries the scopes the link from the caller's connection to yours
 grants (all the ones it `uses` that you `provide`, minus any an org admin took away). Guard sibling endpoints with
@@ -375,6 +404,10 @@ $client->sendEvent('some.event', $tenantId, $data);           // any event SLS a
 
   Ask SLS to allow `sls:directory.read`, `sls:partnerships.read` and `sls:partnerships.manage`
   for your OAuth client. `partnership.*` webhooks reach both sides and drop the cached links.
+- **Cached tokens and webhooks (0.3.3):** sibling and link tokens are cached until shortly before
+  they expire; `connection.*`, `link.*` and `partnership.*` webhooks drop the ones for that tenant
+  or org (`$client->forgetSiblingTokens($tenantId, $orgId)` does the same by hand), so the next
+  call asks SLS again and gets refused once the link or partnership is gone.
 - **Errors:**
   - A refused token request throws `SlsTokenException` (`invalid_target` / `invalid_grant`).
   - A refused partner API call throws `SlsPartnerException` (`status`, `errors`).
@@ -439,10 +472,26 @@ can't create a code.
 **Sign-in variant: `/sls/claim`.** Instead of typing the code, the SLS wizard can send the admin to
 `{instance base URL}/sls/claim?return_to=<SLS URL>&state=<opaque>&org_name=<SLS org name>`. The app
 requires a signed-in company admin (normal login), asks "Connect <company> to SLS organization
-<org_name>?", and on Confirm creates a code as above and redirects to
-`return_to?code=<code>&state=<state>` (`state` unchanged). `return_to` must start with the
-configured SLS issuer (`%sls_connector.issuer%`); refuse anything else (open redirect). The bundle
-doesn't ship this controller yet: apps on v0.1 implement it locally.
+<org_name>?", and on Confirm creates a code as above and hands it back with a POST of `code` and
+`state` (unchanged) to `return_to` — never in a URL, where it would end up in browser history and
+logs (0.3.3):
+
+```php
+use Smartlabsys\SlsConnectorBundle\Provisioning\ClaimHandback;
+
+if (!ClaimHandback::isOnIssuer($returnTo, $slsIssuer)) {   // %sls_connector.issuer%
+    throw new BadRequestHttpException();                    // open redirect
+}
+// … on Confirm, after creating the code:
+return ClaimHandback::response($returnTo, $code, $state,
+    $translator->trans('sls.claim.continue'), $translator->trans('sls.claim.returning'), $request->getLocale());
+```
+
+The response is a small, uncached page whose form posts itself at once (a visible Continue button
+when scripts are off; its CSP allows only that script and a form post to the SLS origin). Older
+apps redirect to `return_to?code=<code>&state=<state>`; SLS still accepts that but logs it as
+deprecated. The bundle doesn't ship the `/sls/claim` controller itself (sign-in and the admin check
+are the app's own): apps implement it locally.
 
 **`claim.code` in `POST /tenants` and `POST /tenants/preview`.** SLS sends
 `"claim": {"owner_email": "…", "code": "ABCD-EFGH-JKLM"}` (either may be absent); the bundle passes
@@ -515,7 +564,11 @@ webhooks and back-channel logout. You can override hooks such as `contractTenant
 tests. For your own event and sibling tests (0.3) the case offers `appEvent($type, $data, $source)`
 (a signed brokered event) and `linkToken($scopes, $tenantId, $callerTenantId)` (a sibling's token
 over a link), and `partnerToken($scopes, $tenantId, $role, $partnershipId)` (the same over a
-partnership, with the `partnership_id` and `role` claims).
+partnership, with the `partnership_id` and `role` claims). Partner tokens are introspected (0.3.3):
+`partnerToken()` records its token as active, so no SLS is needed; for partner tokens minted
+elsewhere call `rememberPartnerToken($token, $active)` (or
+`PartnerTokenIntrospector::remember()`), or set `sls_connector.api.introspect_partner_tokens: false`
+under `when@test`.
 
 ## Developing the bundle
 

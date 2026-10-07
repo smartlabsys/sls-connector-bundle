@@ -215,6 +215,74 @@ final class SlsClientTest extends TestCase
         self::assertStringContainsString('caller_tenant_id=tenant-b', $body);
     }
 
+    public function testForgetSiblingTokensDropsThatTenantsLinkTokensOnly(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'a-1', 'expires_in' => 300]),
+            new JsonMockResponse(['access_token' => 'b-1', 'expires_in' => 300]),
+            new JsonMockResponse(['access_token' => 'plain', 'expires_in' => 300]),
+            new JsonMockResponse(['access_token' => 'a-2', 'expires_in' => 300]),
+        ]);
+
+        self::assertSame('a-1', $client->serviceToken([], null, null, 'conn-qc', 'tenant-a'));
+        self::assertSame('b-1', $client->serviceToken([], null, null, 'conn-qc', 'tenant-b'));
+        self::assertSame('plain', $client->serviceToken([SlsClient::SCOPE_PARTNERSHIPS_READ]));
+        self::assertSame('a-1', $client->serviceToken([], null, null, 'conn-qc', 'tenant-a'), 'cached');
+
+        $client->forgetSiblingTokens('tenant-a', null);
+
+        self::assertSame('a-2', $client->serviceToken([], null, null, 'conn-qc', 'tenant-a'), 'asked again');
+        self::assertSame('b-1', $client->serviceToken([], null, null, 'conn-qc', 'tenant-b'), 'another tenant keeps its token');
+        self::assertSame('plain', $client->serviceToken([SlsClient::SCOPE_PARTNERSHIPS_READ]), 'tokens for SLS itself are kept');
+        self::assertCount(4, $this->requestsTo('/oauth2/token'));
+    }
+
+    public function testForgetSiblingTokensByOrgAndUntargeted(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'org-1', 'expires_in' => 300]),
+            new JsonMockResponse(['access_token' => 'bare-1', 'expires_in' => 300]),
+            new JsonMockResponse(['access_token' => 'org-2', 'expires_in' => 300]),
+            new JsonMockResponse(['access_token' => 'bare-2', 'expires_in' => 300]),
+        ]);
+
+        self::assertSame('org-1', $client->serviceToken([], 'https://qc.test', 'org-x'));
+        self::assertSame('bare-1', $client->serviceToken([], null, null, 'conn-qc'));
+
+        $client->forgetSiblingTokens('some-tenant', 'org-y');
+        self::assertSame('org-1', $client->serviceToken([], 'https://qc.test', 'org-x'), 'another org keeps its token');
+
+        $client->forgetSiblingTokens(null, 'org-x');
+        self::assertSame('org-2', $client->serviceToken([], 'https://qc.test', 'org-x'));
+        self::assertSame('bare-2', $client->serviceToken([], null, null, 'conn-qc'), 'a token naming no tenant or org goes on every forget');
+    }
+
+    public function testIntrospect(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['active' => true, 'jti' => 'j-1']),
+            new JsonMockResponse(['active' => false]),
+            new JsonMockResponse(['error' => 'invalid_client'], ['http_code' => 401]),
+            new JsonMockResponse(['unexpected' => true]),
+        ], discovery: ['introspection_endpoint' => self::ISS . '/oauth2/introspect']);
+
+        self::assertSame(['active' => true, 'jti' => 'j-1'], $client->introspect('tok'));
+        self::assertSame(['active' => false], $client->introspect('tok'));
+        $call = $this->requestsTo('/oauth2/introspect')[0];
+        self::assertSame('POST', $call['method']);
+        self::assertSame('token=tok&token_type_hint=access_token', $call['options']['body']);
+        self::assertContains('Authorization: Basic ' . base64_encode('demo-client:s3cret'), $call['options']['headers']);
+
+        foreach (['invalid_client', 'HTTP 200'] as $expected) {
+            try {
+                $client->introspect('tok');
+                self::fail('Expected SlsUnavailableException');
+            } catch (SlsUnavailableException $e) {
+                self::assertStringContainsString($expected, $e->getMessage());
+            }
+        }
+    }
+
     public function testCallLinkForAUser(): void
     {
         $client = $this->client([
@@ -666,10 +734,10 @@ final class SlsClientTest extends TestCase
      * @param list<MockResponse>   $responses
      * @param array<string, mixed> $config    the bundle config, as `%sls_connector.config%`
      */
-    private function client(array $responses, array $config = []): SlsClient
+    private function client(array $responses, array $config = [], array $discovery = []): SlsClient
     {
         $this->responses = $responses;
-        $discovery       = ['issuer' => self::ISS, 'token_endpoint' => self::ISS . '/oauth2/token', 'jwks_uri' => self::ISS . '/oauth2/jwks'];
+        $discovery      += ['issuer' => self::ISS, 'token_endpoint' => self::ISS . '/oauth2/token', 'jwks_uri' => self::ISS . '/oauth2/jwks'];
         $http            = new MockHttpClient(function (string $method, string $url, array $options) use ($discovery): MockResponse {
             $this->requests[] = ['method' => $method, 'url' => $url, 'options' => $options];
             if (str_ends_with($url, '/.well-known/openid-configuration')) {

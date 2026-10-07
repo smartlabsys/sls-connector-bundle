@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Smartlabsys\SlsConnectorBundle\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Smartlabsys\SlsConnectorBundle\Client\SlsClient;
 use Smartlabsys\SlsConnectorBundle\Jwt\KeySetProvider;
 use Smartlabsys\SlsConnectorBundle\Jwt\SlsMetadata;
 use Smartlabsys\SlsConnectorBundle\Jwt\TokenValidator;
+use Smartlabsys\SlsConnectorBundle\Security\PartnerTokenIntrospector;
 use Smartlabsys\SlsConnectorBundle\Security\SlsAppUser;
 use Smartlabsys\SlsConnectorBundle\Security\SlsIdentity;
 use Smartlabsys\SlsConnectorBundle\Security\SlsUserResolverInterface;
@@ -15,6 +17,8 @@ use Smartlabsys\SlsConnectorBundle\Security\SlsUserTokenHandler;
 use Smartlabsys\SlsConnectorBundle\Test\SlsTestTokens;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
 use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\JsonMockResponse;
+use Symfony\Component\HttpClient\Response\MockResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\Security\Core\Exception\BadCredentialsException;
@@ -31,6 +35,9 @@ final class SlsUserTokenHandlerTest extends TestCase
     private TokenValidator $validator;
     private RequestStack $requestStack;
     private string $jwksFile;
+
+    /** @var list<string> */
+    private array $introspections = [];
 
     protected function setUp(): void
     {
@@ -91,13 +98,69 @@ final class SlsUserTokenHandlerTest extends TestCase
         self::assertNull($linked->partnershipRole, 'no role without a partnership');
     }
 
+    public function testRevokedPartnerTokenIsRefused(): void
+    {
+        $handler = $this->handler(true, [new JsonMockResponse(['active' => false])]);
+
+        try {
+            $handler->getUserBadgeFrom($this->tokens->partnerToken(self::ISS, self::AUD, ['qc:requests.read'], 'tenant-1', 'qc:laboratory'));
+            self::fail('Expected BadCredentialsException');
+        } catch (BadCredentialsException $e) {
+            self::assertSame('This partner token is no longer valid.', $e->getMessage());
+        }
+        self::assertCount(1, $this->introspections);
+    }
+
+    public function testPartnerTokenIsRefusedWhileSlsCannotBeAsked(): void
+    {
+        $handler = $this->handler(true, [new MockResponse('', ['error' => 'connection refused'])]);
+
+        try {
+            $handler->getUserBadgeFrom($this->tokens->partnerToken(self::ISS, self::AUD, ['qc:requests.read'], 'tenant-1', 'qc:laboratory'));
+            self::fail('Expected BadCredentialsException');
+        } catch (BadCredentialsException $e) {
+            self::assertSame('The partner token could not be checked with SLS.', $e->getMessage(), 'fail closed');
+        }
+    }
+
+    public function testActivePartnerTokenAndLinkTokens(): void
+    {
+        $handler = $this->handler(true, [new JsonMockResponse(['active' => true])]);
+
+        $user = $handler->getUserBadgeFrom($this->tokens->partnerToken(self::ISS, self::AUD, [], 'tenant-1', 'qc:laboratory', 'p-1'))->getUser();
+        self::assertSame('p-1', $user->partnershipId);
+        $handler->getUserBadgeFrom($this->tokens->linkToken(self::ISS, self::AUD, [], 'tenant-1'));
+        $handler->getUserBadgeFrom($this->tokens->userAccessToken(self::ISS, self::AUD, 'other-client', 'user-1'));
+
+        self::assertCount(1, $this->introspections, 'only the partner token is introspected');
+    }
+
+    public function testExchangedUserTokenOverAPartnershipIsIntrospectedToo(): void
+    {
+        $this->expectException(BadCredentialsException::class);
+        $this->handler(false, [new JsonMockResponse(['active' => false])])
+            ->getUserBadgeFrom($this->tokens->userAccessToken(self::ISS, self::AUD, 'lims-client', 'user-1', ['partnership_id' => 'p-1', 'role' => 'qc:laboratory']));
+    }
+
+    public function testRefusedAppTokenIsNotIntrospected(): void
+    {
+        try {
+            $this->handler(false, [])->getUserBadgeFrom($this->tokens->partnerToken(self::ISS, self::AUD, [], 'tenant-1', 'qc:laboratory'));
+            self::fail('Expected BadCredentialsException');
+        } catch (BadCredentialsException $e) {
+            self::assertSame('App tokens are not accepted here.', $e->getMessage());
+        }
+        self::assertSame([], $this->introspections);
+    }
+
     public function testServiceTokenAlwaysRefused(): void
     {
         $this->expectException(BadCredentialsException::class);
         $this->handler(true)->getUserBadgeFrom($this->tokens->serviceToken(self::ISS, self::AUD, [], 'tenant-1'));
     }
 
-    private function handler(bool $acceptAppTokens): SlsUserTokenHandler
+    /** @param list<MockResponse>|null $introspection SLS's introspection answers; null = no introspector */
+    private function handler(bool $acceptAppTokens, ?array $introspection = null): SlsUserTokenHandler
     {
         $resolver = new class implements SlsUserResolverInterface {
             public function resolveOidcUser(SlsIdentity $identity): ?UserInterface
@@ -111,6 +174,20 @@ final class SlsUserTokenHandlerTest extends TestCase
             }
         };
 
-        return new SlsUserTokenHandler($this->validator, $this->requestStack, $resolver, null, $acceptAppTokens);
+        $introspector = null;
+        if ($introspection !== null) {
+            $http = new MockHttpClient(function (string $method, string $url) use (&$introspection): MockResponse {
+                if (str_ends_with($url, '/.well-known/openid-configuration')) {
+                    return new JsonMockResponse(['issuer' => self::ISS, 'introspection_endpoint' => self::ISS . '/oauth2/introspect']);
+                }
+                $this->introspections[] = $url;
+
+                return array_shift($introspection) ?? throw new \LogicException('Unexpected request ' . $method . ' ' . $url);
+            });
+            $cache        = new ArrayAdapter();
+            $introspector = new PartnerTokenIntrospector(new SlsClient($http, $cache, new SlsMetadata($http, $cache, self::ISS), self::CID, 's3cret'), $cache);
+        }
+
+        return new SlsUserTokenHandler($this->validator, $this->requestStack, $resolver, null, $acceptAppTokens, $introspector);
     }
 }
