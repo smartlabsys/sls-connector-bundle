@@ -244,6 +244,109 @@ final class SlsClientTest extends TestCase
         $client->callLink('tenant-b', 'conn-qc', 'GET', '/requests');
     }
 
+    public function testLinksOfAnInactiveConnectionAreEmptyAndCached(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['errors' => [['message' => 'Not found']]], ['http_code' => 404]),
+        ]);
+
+        self::assertSame([], $client->links('tenant-off'));
+        self::assertSame([], $client->links('tenant-off'), 'from cache');
+        self::assertNull($client->link('tenant-off', 'qc'));
+        self::assertCount(1, $this->requestsTo('/api/discovery/tenant/tenant-off/links'));
+    }
+
+    public function testFailingLinksDiscoveryIsUnavailable(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse([], ['http_code' => 500]),
+        ]);
+
+        $this->expectException(SlsUnavailableException::class);
+        $client->links('tenant-a');
+    }
+
+    public function testRefusedDiscoveryTokenIsUnavailable(): void
+    {
+        $client = $this->client([new JsonMockResponse(['error' => 'invalid_client'], ['http_code' => 401])]);
+
+        try {
+            $client->links('tenant-a');
+            self::fail('expected SlsUnavailableException');
+        } catch (SlsUnavailableException $e) {
+            self::assertInstanceOf(SlsTokenException::class, $e->getPrevious());
+        }
+    }
+
+    public function testLinksGrantingPreferTheOwnCompany(): void
+    {
+        $other = self::linked('conn-qc-b', 'qc', 'https://qc-b.test');
+        $own   = ['same_company' => true] + self::linked('conn-qc-a', 'qc', 'https://qc-a.test');
+        $off   = ['status' => 'disabled'] + self::linked('conn-qc-c', 'qc', 'https://qc-c.test');
+        $fin   = self::linked('conn-fin', 'financial', 'https://fin.test');
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [$other, $off, $fin, $own]]),
+        ]);
+
+        self::assertSame([$own, $other], $client->linksGranting('tenant-a', 'qc:requests.write'));
+        self::assertSame($own, $client->linkGranting('tenant-a', 'qc:requests.write'));
+        self::assertNull($client->linkGranting('tenant-a', 'qc:requests.read'), 'a scope no link grants');
+        self::assertSame([], $client->linksGranting('tenant-a', 'no-app-prefix'));
+    }
+
+    public function testPartnerLinksByRoleAndSide(): void
+    {
+        $lab      = ['partnership' => ['id' => 'p-1', 'role' => 'qc.laboratory', 'side' => 'customer'], 'link_id' => null, 'status' => 'inactive'] + self::linked('conn-lab', 'lims', 'https://lims.test');
+        $customer = ['partnership' => ['id' => 'p-2', 'role' => 'qc.laboratory', 'side' => 'provider'], 'link_id' => null] + self::linked('conn-cust', 'qc', 'https://qc.test');
+        $client   = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [$lab, $customer, self::linked('conn-fin', 'financial', 'https://fin.test')]]),
+        ]);
+
+        self::assertSame([$lab, $customer], $client->partnerLinks('tenant-a', 'qc.laboratory'));
+        self::assertSame([$lab], $client->partnerLinks('tenant-a', 'qc.laboratory', 'customer'), 'whatever the connection status');
+        self::assertSame([], $client->partnerLinks('tenant-a', 'financial.source'));
+    }
+
+    public function testCallLinkWithScopesFromTheInstanceRoot(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [self::linked('conn-qc', 'qc', 'https://qc.test')]]),
+            new JsonMockResponse(['access_token' => 'narrow', 'expires_in' => 300]),
+            new JsonMockResponse(['ok' => true]),
+        ]);
+
+        $client->callLink('tenant-b', 'conn-qc', 'GET', '/api/lab-integration/requests', scopes: ['qc:requests.read'], fromInstanceRoot: true);
+
+        $last = end($this->requests);
+        self::assertSame('https://qc.test/api/lab-integration/requests', $last['url']);
+        self::assertContains('Authorization: Bearer narrow', $last['options']['headers']);
+        $body = $this->requestsTo('/oauth2/token')[1]['options']['body'];
+        self::assertStringContainsString('scope=qc%3Arequests.read', $body);
+        self::assertStringContainsString('target_connection=conn-qc', $body);
+        self::assertStringNotContainsString('resource=', $body);
+    }
+
+    public function testCallLinkForAUserWithScopes(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['items' => [self::linked('conn-qc', 'qc', 'https://qc.test')]]),
+            new JsonMockResponse(['access_token' => 'exchanged', 'expires_in' => 300]),
+            new JsonMockResponse(['ok' => true]),
+        ]);
+
+        $client->callLink('tenant-b', 'qc', 'GET', '/requests', userAccessToken: 'user-token', scopes: ['qc:requests.read', 'qc:requests.write']);
+
+        $body = $this->requestsTo('/oauth2/token')[1]['options']['body'];
+        self::assertStringContainsString('subject_token=user-token', $body);
+        self::assertStringContainsString('scope=qc%3Arequests.read+qc%3Arequests.write', $body);
+    }
+
     public function testSendEvent(): void
     {
         $client = $this->client([
@@ -374,6 +477,27 @@ final class SlsClientTest extends TestCase
         self::assertSame(['order' => 'o-1'], $body['data']);
 
         self::assertSame('evt-7', $client->emit('demo.order.created', 'tenant-1', [], 'evt-7'), 'a given event id is kept');
+    }
+
+    public function testEmitHandsBackSlsAnswer(): void
+    {
+        $client = $this->client([
+            new JsonMockResponse(['access_token' => 'svc', 'expires_in' => 300]),
+            new JsonMockResponse(['status' => 'duplicate']),
+        ], self::EVENTS_CONFIG);
+
+        self::assertSame('evt-8', $client->emit('demo.order.created', 'tenant-1', [], 'evt-8', $answer));
+        self::assertSame('duplicate', $answer);
+    }
+
+    public function testCanEmit(): void
+    {
+        $client = $this->client([], self::EVENTS_CONFIG);
+
+        self::assertTrue($client->canEmit('demo.order.created'));
+        self::assertFalse($client->canEmit('demo.order.deleted'), 'not declared');
+        self::assertFalse($client->canEmit('qc.order.created'), 'another app\'s prefix');
+        self::assertFalse($this->client([])->canEmit('demo.order.created'), 'no app key configured');
     }
 
     public function testEmitNeedsTheAppPrefix(): void

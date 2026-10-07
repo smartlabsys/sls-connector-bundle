@@ -37,6 +37,14 @@ Requirements: PHP ≥ 8.2 and Symfony 7.4 (framework, security, http-client, cac
 > Claim codes (SLS Phase 13): `tenants.claim_code`, `Provisioning\ClaimCodes`,
 > `TenantRequest::$claimCode`; see [Claiming an existing company](#claiming-an-existing-company-claim-codes).
 
+> **0.3.1.** Fixes and helpers that apps had worked around, all backward compatible:
+> `links()` answers `[]` (cached) for a connection SLS no longer knows instead of throwing, and a
+> refused discovery token is `SlsUnavailableException`; `linksGranting()` / `linkGranting()` (links
+> granting a scope, own company first) and `partnerLinks()` (by role and side); `callLink(scopes:,
+> fromInstanceRoot:)`; `emit(..., answer: $answer)` and `canEmit()`; `SlsAppEvent::$envelope` (the
+> whole webhook body); `CompanyDetails::wasSent()` / `toArray(onlySent: true)` to tell a left-out
+> key from a blank one.
+
 ## Install
 
 ```bash
@@ -231,7 +239,7 @@ implementations of one interface, alias the interface to the one you want.
 | Interface | Required for | Notes |
 |---|---|---|
 | `Security\SlsUserResolverInterface` | SSO, user tokens | `resolveOidcUser(SlsIdentity)`: link by SLS `sub` → verified email → create. `loadBySlsUserId()` for API tokens. |
-| `Provisioning\TenantProvisionerInterface` | provisioning | `create()` is idempotent on `TenantRequest::$slsCompanyId` (contract 2; 201 new / 200 existing), or on `sls_org_id` when a contract 1 platform sends no company. A tenant made under contract 1 (org only) is linked to the first company of that org that asks; see the interface for the lookup order. `TenantRequest::$company` (`CompanyDetails`) carries the company's details: SLS owns them once connected, and `company.updated` (`sls.webhook.company.updated`) brings changes. A dedicated install returns its one tenant. `TenantRequest::$claimOwnerEmail` (the connecting user's verified e-mail) lets you link an existing, not-yet-linked tenant that user owns instead of creating a duplicate (201). `TenantRequest::$claimCode` (`claim.code`) claims the company that issued the code; see [Claiming an existing company](#claiming-an-existing-company-claim-codes). |
+| `Provisioning\TenantProvisionerInterface` | provisioning | `create()` is idempotent on `TenantRequest::$slsCompanyId` (contract 2; 201 new / 200 existing), or on `sls_org_id` when a contract 1 platform sends no company. A tenant made under contract 1 (org only) is linked to the first company of that org that asks; see the interface for the lookup order. `TenantRequest::$company` (`CompanyDetails`) carries the company's details (0.3.1: `wasSent($key)` / `toArray(onlySent: true)` tell a key SLS left out from one it sent blank): SLS owns them once connected, and `company.updated` (`sls.webhook.company.updated`) brings changes. A dedicated install returns its one tenant. `TenantRequest::$claimOwnerEmail` (the connecting user's verified e-mail) lets you link an existing, not-yet-linked tenant that user owns instead of creating a duplicate (201). `TenantRequest::$claimCode` (`claim.code`) claims the company that issued the code; see [Claiming an existing company](#claiming-an-existing-company-claim-codes). |
 | `Provisioning\TenantPreviewInterface` | tenant preview (optional) | `preview()` answers `POST /tenants/preview`: what `create()` would do for the same request (`existing` / `claim` / `create`, with the tenant for the first two) without writing anything. SLS's connect wizard shows it ("your existing company will be linked"). Without it the endpoint answers 501 and SLS shows a neutral message. Implement it on your provisioner with the same lookup `create()` uses. |
 | `Provisioning\SeedHandlerInterface` | seed templates (optional) | `start()` queues the work and returns a `SeedJob`. The endpoint answers 202. |
 | `Provisioning\CancellableSeedHandlerInterface` | cancelling seeds (optional) | Extends the seed handler with `cancel()`: stop a queued / running job (`DELETE …/seeds/{job}` → 204, unknown job → 404). Without it the endpoint answers 501 and SLS just stops tracking the job. |
@@ -277,12 +285,16 @@ linked to the sender (either direction, link on) whose manifest lists the type u
 ```php
 $eventId = $client->emit('qc.request.created', $tenantId, ['request_id' => $id]); // returns the event id
 $client->emit('qc.request.created', $tenantId, $data, $stableId);                 // idempotent resend
+$client->emit('qc.request.created', $tenantId, $data, answer: $answer);           // $answer: SLS's raw reply (0.3.1)
+$client->canEmit('qc.request.created');                                           // listed under events.emits? (0.3.1)
 ```
 
 On the receiving side the envelope carries `source` (the sender: `connection_id`, `app`,
 `instance_id`, `company_id`, `company_name`, `tenant_id`). For a type under `events.consumes` the
 bundle dispatches, after the usual `sls.webhook*` events, `Event\SlsAppEvent` as `sls.event` and
 `sls.event.<type>`. Other brokered types are acknowledged and logged, not dispatched.
+`SlsAppEvent::$envelope` (0.3.1) holds the whole webhook body, for fields beyond `source` and
+`data` (e.g. `event_id`, or extra keys a newer SLS adds to `source`).
 
 ```php
 #[AsEventListener('sls.event.qc.request.created')]
@@ -315,9 +327,14 @@ $client->connections($orgId);                                 // discovery, cach
 $client->callSibling($orgId, 'lims', 'GET', '/samples');      // as this app
 $client->callSibling($orgId, 'lims', 'GET', '/samples', [], OidcLoginFlow::accessToken($session)); // as the user
 $client->callSibling($orgId, 'lims', 'GET', '/samples', instanceId: $instanceId); // one of several LIMS instances
-$client->links($tenantId);                                    // what this tenant is linked to, cached 5 min
+$client->links($tenantId);                                    // what this tenant is linked to, cached 5 min; [] once SLS forgets the connection
+$client->linksGranting($tenantId, 'qc:requests.read');        // active links granting the scope, own company first (0.3.1)
+$client->linkGranting($tenantId, 'qc:requests.read');         // the first of those, or null (0.3.1)
+$client->partnerLinks($tenantId, 'qc:laboratory', 'provider'); // partner links by role (and side) (0.3.1)
 $client->callLink($tenantId, 'qc', 'POST', '/requests', ['json' => $body]);       // by app key or connection id
 $client->callLink($tenantId, $connectionId, 'GET', '/requests', [], $userToken);  // as the user
+$client->callLink($tenantId, $connId, 'GET', '/api/lab-integration/requests',
+    scopes: ['qc:requests.read'], fromInstanceRoot: true);   // narrowed token, path from the instance root (0.3.1)
 $client->callSibling($orgId, 'qc', 'GET', '/requests', connectionId: $connId);    // one exact connection (0.3)
 $client->callSibling($orgId, 'qc', 'GET', '/requests', connectionId: $connId, tenantId: $tenantId); // = callLink()
 $client->emit('lims.sample.received', $tenantId, $data);      // an event for linked apps (0.3)

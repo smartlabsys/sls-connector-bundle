@@ -46,6 +46,8 @@ final class DemoAppEventsTest extends WebTestCase
         self::assertSame($tenant, $logged[0]['tenant_id']);
         self::assertSame(['order' => 'o-1'], $logged[0]['data']);
         self::assertSame($source, $logged[0]['source'], 'the known source fields only');
+        self::assertSame($source + ['extra' => 'dropped'], $logged[0]['envelope']['source'], 'the envelope as delivered');
+        self::assertSame($eventId, $logged[0]['envelope']['event_id']);
 
         self::assertSame([200, 'duplicate'], $this->webhook(['event_id' => $eventId, 'type' => 'demo2.order.created', 'tenant_id' => $tenant, 'data' => [], 'source' => $source]));
         self::assertCount(1, $this->appEvents($eventId), 'a redelivery is not dispatched again');

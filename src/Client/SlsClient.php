@@ -208,10 +208,17 @@ class SlsClient
 
     /**
      * The connections this app's tenant is linked to (doc 09 §1, 10.4): inside its company and to
-     * other companies, enabled links only, each with `link_id` and the granted `scopes`. Cached
-     * for 5 minutes and dropped on `link.*` / `connection.*` webhooks for that tenant.
+     * other companies, enabled links only, each with `link_id` and the granted `scopes`. Partners
+     * in other organizations are listed too (`link_id` null, `partnership: {id, role, side}`).
+     * Cached for 5 minutes and dropped on `link.*` / `connection.*` / `partnership.*` webhooks for
+     * that tenant.
      *
-     * @return list<array{app: string, connection_id: string, instance_id: string, tenant_id: ?string, company_id: ?string, company_name: ?string, api_url: ?string, mcp_url: ?string, audience: string, status: string, link_id: ?string, scopes: list<string>, declared: bool, same_company: bool}>
+     * A tenant whose connection isn't active (SLS answers 404) has no links: the answer is an
+     * empty list, cached like any other (0.3.1).
+     *
+     * @return list<array{app: string, connection_id: string, instance_id: string, tenant_id: ?string, company_id: ?string, company_name: ?string, api_url: ?string, mcp_url: ?string, audience: string, status: string, link_id: ?string, scopes: list<string>, declared: bool, same_company: bool, partnership?: array{id: string, role: string, side: string}}>
+     *
+     * @throws SlsUnavailableException SLS could not be reached, failed, or refused this app's service token
      */
     public function links(string $tenantId, bool $refresh = false): array
     {
@@ -220,10 +227,60 @@ class SlsClient
             return $item->get();
         }
 
-        $items = $this->discover('/api/discovery/tenant/' . rawurlencode($tenantId) . '/links');
+        $items = $this->discover('/api/discovery/tenant/' . rawurlencode($tenantId) . '/links', notFoundIsEmpty: true);
         $this->cache->save($item->set($items)->expiresAfter(self::DISCOVERY_TTL));
 
         return $items;
+    }
+
+    /**
+     * The tenant's active links to an instance of the scope's app (`qc:requests.write` → `qc`)
+     * that grant `$scope`, those inside the tenant's own company first (0.3.1).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function linksGranting(string $tenantId, string $scope): array
+    {
+        $app = strstr($scope, ':', true);
+        if ($app === false || $app === '') {
+            return [];
+        }
+
+        $granting = array_values(array_filter(
+            $this->links($tenantId),
+            static fn (array $link): bool => ($link['app'] ?? null) === $app
+                && ($link['status'] ?? null) === 'active'
+                && in_array($scope, is_array($link['scopes'] ?? null) ? $link['scopes'] : [], true),
+        ));
+        usort($granting, static fn (array $a, array $b): int => (int) (($b['same_company'] ?? false) === true) <=> (int) (($a['same_company'] ?? false) === true));
+
+        return $granting;
+    }
+
+    /**
+     * The link to use for `$scope`: the first of {@see self::linksGranting()}, or null (0.3.1).
+     *
+     * @return array<string, mixed>|null
+     */
+    public function linkGranting(string $tenantId, string $scope): ?array
+    {
+        return $this->linksGranting($tenantId, $scope)[0] ?? null;
+    }
+
+    /**
+     * The tenant's links that come from a partnership in `$role`, on `$side` (this tenant's side,
+     * `provider` or `customer`) when given, whatever their connection status (0.3.1).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function partnerLinks(string $tenantId, string $role, ?string $side = null, bool $refresh = false): array
+    {
+        return array_values(array_filter(
+            $this->links($tenantId, $refresh),
+            static fn (array $link): bool => is_array($link['partnership'] ?? null)
+                && ($link['partnership']['role'] ?? null) === $role
+                && ($side === null || ($link['partnership']['side'] ?? null) === $side),
+        ));
     }
 
     /**
@@ -258,9 +315,15 @@ class SlsClient
      * companies and when the org has several connections to the same app. As this app, or on
      * behalf of a user when `$userAccessToken` is given (token exchange).
      *
+     * 0.3.1: `$scopes` narrows the token to those of the link's scopes (all of them when empty).
+     * `$fromInstanceRoot` resolves `$path` against the instance's base URL (the link's `audience`)
+     * instead of its `api_url`, for an API the manifest's `endpoints.api` doesn't cover.
+     *
      * @param array<string, mixed> $options Symfony HttpClient options
+     * @param string[]             $scopes
      *
      * @throws SlsUnavailableException no such link, or the linked connection has no API
+     * @throws SlsTokenException       SLS refused the token (e.g. `invalid_target`: the link is off)
      */
     public function callLink(
         string $tenantId,
@@ -269,16 +332,19 @@ class SlsClient
         string $path,
         array $options = [],
         #[\SensitiveParameter] ?string $userAccessToken = null,
+        array $scopes = [],
+        bool $fromInstanceRoot = false,
     ): ResponseInterface {
         $link = $this->link($tenantId, $connectionIdOrAppKey);
-        if ($link === null || ($link['status'] ?? null) !== 'active' || !is_string($link['api_url'] ?? null) || !is_string($link['connection_id'] ?? null)) {
+        $base = $fromInstanceRoot ? ($link['audience'] ?? null) : ($link['api_url'] ?? null);
+        if ($link === null || ($link['status'] ?? null) !== 'active' || !is_string($base) || $base === '' || !is_string($link['connection_id'] ?? null)) {
             throw new SlsUnavailableException(sprintf('Tenant "%s" has no active link to "%s" with an API.', $tenantId, $connectionIdOrAppKey));
         }
         $token = $userAccessToken !== null
-            ? $this->exchangeToken($userAccessToken, null, null, $link['connection_id'], $tenantId)['access_token']
-            : $this->serviceToken([], null, null, $link['connection_id'], $tenantId);
+            ? $this->exchangeToken($userAccessToken, null, $scopes ? implode(' ', $scopes) : null, $link['connection_id'], $tenantId)['access_token']
+            : $this->serviceToken($scopes, null, null, $link['connection_id'], $tenantId);
 
-        return $this->httpClient->request($method, rtrim($link['api_url'], '/') . '/' . ltrim($path, '/'), $options + [
+        return $this->httpClient->request($method, rtrim($base, '/') . '/' . ltrim($path, '/'), $options + [
             'auth_bearer'   => $token,
             'max_redirects' => 0,
         ]);
@@ -401,15 +467,18 @@ class SlsClient
      * under `sls_connector.events.emits`. Safe to repeat with the same `$eventId` (a UUID is
      * generated when it is null — pass a stable one to make retries idempotent).
      *
+     * `$answer` (0.3.1) receives SLS's answer, as {@see self::sendEvent()} returns it: `received`,
+     * or `duplicate` when SLS already had this event id — e.g. for an outbox recording deliveries.
+     *
      * @param array<string, mixed> $data at most 64 KB JSON-encoded
      *
      * @return string the event id sent
      *
-     * @throws \InvalidArgumentException a type this app doesn't declare
+     * @throws \InvalidArgumentException a type this app doesn't declare — check with {@see self::canEmit()}
      * @throws SlsEventException          SLS refused the event (4xx)
      * @throws SlsUnavailableException    SLS could not be reached or failed (5xx) — try again later
      */
-    public function emit(string $type, string $tenantId, array $data = [], ?string $eventId = null): string
+    public function emit(string $type, string $tenantId, array $data = [], ?string $eventId = null, ?string &$answer = null): string
     {
         $appKey = $this->config['app']['key'] ?? null;
         if (!is_string($appKey) || !str_starts_with($type, $appKey . '.')) {
@@ -419,9 +488,18 @@ class SlsClient
             throw new \InvalidArgumentException(sprintf('Event type "%s" is not listed under sls_connector.events.emits.', $type));
         }
         $eventId ??= self::uuid();
-        $this->sendEvent($type, $tenantId, $data, $eventId);
+        $answer    = $this->sendEvent($type, $tenantId, $data, $eventId);
 
         return $eventId;
+    }
+
+    /** Whether {@see self::emit()} takes this type: it starts with this app's key and is listed under `events.emits` (0.3.1). */
+    public function canEmit(string $type): bool
+    {
+        $appKey = $this->config['app']['key'] ?? null;
+
+        return is_string($appKey) && str_starts_with($type, $appKey . '.')
+            && in_array($type, $this->config['events']['emits'] ?? [], true);
     }
 
     /**
@@ -579,20 +657,30 @@ class SlsClient
     }
 
     /**
-     * GET a discovery endpoint with this app's service token.
+     * GET a discovery endpoint with this app's service token. A refused service token is an
+     * SlsUnavailableException like any other SLS failure (0.3.1).
      *
-     * @return list<array<string, mixed>> its `items`
+     * @return list<array<string, mixed>> its `items`; empty on a 404 when `$notFoundIsEmpty`
      */
-    private function discover(string $path): array
+    private function discover(string $path, bool $notFoundIsEmpty = false): array
     {
         try {
-            $data = $this->httpClient->request('GET', $this->metadata->issuer() . $path, [
-                'auth_bearer'   => $this->serviceToken(),
+            $token = $this->serviceToken();
+        } catch (SlsTokenException $e) {
+            throw new SlsUnavailableException('SLS refused the service token for discovery: ' . $e->getMessage(), 0, $e);
+        }
+        try {
+            $response = $this->httpClient->request('GET', $this->metadata->issuer() . $path, [
+                'auth_bearer'   => $token,
                 'headers'       => ['Accept' => 'application/json'],
                 'timeout'       => 5,
                 'max_duration'  => 10,
                 'max_redirects' => 0,
-            ])->toArray();
+            ]);
+            if ($notFoundIsEmpty && $response->getStatusCode() === 404) {
+                return [];
+            }
+            $data = $response->toArray();
         } catch (ExceptionInterface $e) {
             throw new SlsUnavailableException('SLS discovery failed: ' . $e->getMessage(), 0, $e);
         }

@@ -27,8 +27,10 @@ final class SlsAppEvent extends Event
 
     /**
      * @param array<string, mixed>   $data   the event's `data`, as the sender sent it
-     * @param array<string, ?string> $source the sender: `connection_id`, `app`, `instance_id`,
-     *                                       `company_id`, `company_name`, `tenant_id`
+     * @param array<string, ?string> $source   the sender: `connection_id`, `app`, `instance_id`,
+     *                                         `company_id`, `company_name`, `tenant_id`
+     * @param array<string, mixed>   $envelope the whole webhook body as SLS delivered it (0.3.1), for
+     *                                         a listener that hands the event on as is
      */
     public function __construct(
         public readonly string $type,
@@ -38,6 +40,7 @@ final class SlsAppEvent extends Event
         public readonly ?\DateTimeImmutable $occurredAt,
         public readonly array $data,
         public readonly array $source,
+        public readonly array $envelope = [],
     ) {}
 
     /** The sending app's key (`qc`). */

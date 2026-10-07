@@ -23,6 +23,7 @@ final class AppEventLogger
                 'tenant_id' => $event->tenantId,
                 'data'      => $event->data,
                 'source'    => $event->source,
+                'envelope'  => $event->envelope,
             ];
             $data['app_events'] = array_slice($data['app_events'], -50);
         });

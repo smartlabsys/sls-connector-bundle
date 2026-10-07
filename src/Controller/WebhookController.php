@@ -127,6 +127,7 @@ final class WebhookController
             $event->occurredAt,
             $event->data,
             $fields,
+            $event->payload,
         );
         $this->dispatcher->dispatch($appEvent, SlsAppEvent::NAME);
         $this->dispatcher->dispatch($appEvent, $appEvent->eventName());
