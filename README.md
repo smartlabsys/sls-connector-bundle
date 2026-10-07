@@ -21,17 +21,21 @@ The contract itself is specified in the SLS repo: `docs/platform/05-app-contract
 
 Requirements: PHP ≥ 8.2 and Symfony 7.4 (framework, security, http-client, cache).
 
-> **0.3.0-dev (unreleased, branch `phase-10-events`).** Adds events between apps and sibling
+> **0.3.0.** Contract 2 (tenants per SLS company), links between connections, and events between
+> apps and sibling
 > endpoint helpers, all backward compatible: `SlsClient::emit()`, `Event\SlsAppEvent`
 > (`sls.event.<type>`), `Provisioning\CompanyUpdatedHandlerInterface`, `#[SlsSibling]` with
 > `Security\SlsTenantResolverInterface`, `callSibling(connectionId:)`, and the test kit's
 > `appEvent()` / `linkToken()`. Needs SLS with 10.8 (event broker) for `emit()`.
 >
-> Also on branch `phase-10-partnerships`: partnerships (SLS 10.9) — `integration.partnership_roles`,
+> Partnerships (SLS 10.9): `integration.partnership_roles`,
 > `SlsClient::directory()` / `partnerships()` / `proposePartnership()` / `redeemInvite()` /
 > `acceptPartnership()` / `declinePartnership()` / `endPartnership()` (`SlsPartnerException`),
 > `SlsAppUser::$partnershipId` / `$partnershipRole`, the discovery cache dropped on `partnership.*`,
 > and the test kit's `partnerToken()`.
+>
+> Claim codes (SLS Phase 13): `tenants.claim_code`, `Provisioning\ClaimCodes`,
+> `TenantRequest::$claimCode`; see [Claiming an existing company](#claiming-an-existing-company-claim-codes).
 
 ## Install
 
