@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Smartlabsys\SlsConnectorBundle\Tests\App\Sls;
 
+use Smartlabsys\SlsConnectorBundle\Exception\ContractException;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\Tenant;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\TenantPreview;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\TenantRequest;
@@ -26,6 +27,7 @@ final class DemoTenantProvisioner implements TenantProvisionerInterface, TenantP
 
                 return new TenantResult(self::tenant($data['tenants'][$found]), false);
             }
+            self::rejectClaimCode($request);
             $id                   = 'tn_' . JsonStore::id();
             $data['tenants'][$id] = [
                 'tenant_id'      => $id,
@@ -43,6 +45,9 @@ final class DemoTenantProvisioner implements TenantProvisionerInterface, TenantP
     {
         $tenants = $this->store->read()['tenants'] ?? [];
         $found   = self::find($tenants, $request);
+        if ($found === null) {
+            self::rejectClaimCode($request);
+        }
 
         return $found !== null
             ? new TenantPreview(TenantPreview::ACTION_EXISTING, self::tenant($tenants[$found]))
@@ -78,6 +83,17 @@ final class DemoTenantProvisioner implements TenantProvisionerInterface, TenantP
         }
 
         return null;
+    }
+
+    /**
+     * Step 3 (claim by code): the demo has no standalone companies, so no claim code is ever valid.
+     * A real app looks the code up with ClaimCodes::hash() and links that company instead.
+     */
+    private static function rejectClaimCode(TenantRequest $request): void
+    {
+        if ($request->claimCode !== null) {
+            throw ContractException::invalidClaimCode();
+        }
     }
 
     public function get(string $tenantId): ?Tenant

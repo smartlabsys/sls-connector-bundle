@@ -20,9 +20,13 @@ interface TenantProvisionerInterface
      *  1. the tenant linked to `slsCompanyId` (`created` false);
      *  2. a tenant linked to `slsOrganizationId` but to no company yet, made before contract 2: link
      *     it to `slsCompanyId` now (`created` false);
-     *  3. when `claimOwnerEmail` is set, an existing tenant linked to no SLS org where a user with
+     *  3. when `claimCode` is set (Phase 13), the standalone tenant that issued that live code
+     *     ({@see ClaimCodes}): link it, mark the code used, apply `company` (`created` true); an
+     *     unknown, expired or used code throws `ContractException::invalidClaimCode()` (422) —
+     *     never fall through to creating;
+     *  4. when `claimOwnerEmail` is set, an existing tenant linked to no SLS org where a user with
      *     that e-mail is an owner (`created` true), instead of a duplicate;
-     *  4. a new tenant from `company` (`created` true).
+     *  5. a new tenant from `company` (`created` true).
      * Several companies of one org get separate tenants.
      */
     public function create(TenantRequest $request): TenantResult;

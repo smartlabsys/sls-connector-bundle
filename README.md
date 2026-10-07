@@ -108,6 +108,8 @@ sls_connector:
               provider_scopes: ['qc:requests.read']     # what the provider gets here: from `provides`
               customer_scopes: ['lims:requests.write']  # what this app gets back on the provider
     endpoints: { api: /api, mcp: null }      # optional manifest endpoints
+    tenants:
+        claim_code: false                    # true: SLS may claim a standalone company with a claim code
     api:
         accept_app_tokens: false             # let sibling apps call your API as themselves
     oidc:
@@ -225,7 +227,7 @@ implementations of one interface, alias the interface to the one you want.
 | Interface | Required for | Notes |
 |---|---|---|
 | `Security\SlsUserResolverInterface` | SSO, user tokens | `resolveOidcUser(SlsIdentity)`: link by SLS `sub` → verified email → create. `loadBySlsUserId()` for API tokens. |
-| `Provisioning\TenantProvisionerInterface` | provisioning | `create()` is idempotent on `TenantRequest::$slsCompanyId` (contract 2; 201 new / 200 existing), or on `sls_org_id` when a contract 1 platform sends no company. A tenant made under contract 1 (org only) is linked to the first company of that org that asks; see the interface for the lookup order. `TenantRequest::$company` (`CompanyDetails`) carries the company's details: SLS owns them once connected, and `company.updated` (`sls.webhook.company.updated`) brings changes. A dedicated install returns its one tenant. `TenantRequest::$claimOwnerEmail` (the connecting user's verified e-mail) lets you link an existing, not-yet-linked tenant that user owns instead of creating a duplicate (201). |
+| `Provisioning\TenantProvisionerInterface` | provisioning | `create()` is idempotent on `TenantRequest::$slsCompanyId` (contract 2; 201 new / 200 existing), or on `sls_org_id` when a contract 1 platform sends no company. A tenant made under contract 1 (org only) is linked to the first company of that org that asks; see the interface for the lookup order. `TenantRequest::$company` (`CompanyDetails`) carries the company's details: SLS owns them once connected, and `company.updated` (`sls.webhook.company.updated`) brings changes. A dedicated install returns its one tenant. `TenantRequest::$claimOwnerEmail` (the connecting user's verified e-mail) lets you link an existing, not-yet-linked tenant that user owns instead of creating a duplicate (201). `TenantRequest::$claimCode` (`claim.code`) claims the company that issued the code; see [Claiming an existing company](#claiming-an-existing-company-claim-codes). |
 | `Provisioning\TenantPreviewInterface` | tenant preview (optional) | `preview()` answers `POST /tenants/preview`: what `create()` would do for the same request (`existing` / `claim` / `create`, with the tenant for the first two) without writing anything. SLS's connect wizard shows it ("your existing company will be linked"). Without it the endpoint answers 501 and SLS shows a neutral message. Implement it on your provisioner with the same lookup `create()` uses. |
 | `Provisioning\SeedHandlerInterface` | seed templates (optional) | `start()` queues the work and returns a `SeedJob`. The endpoint answers 202. |
 | `Provisioning\CancellableSeedHandlerInterface` | cancelling seeds (optional) | Extends the seed handler with `cancel()`: stop a queued / running job (`DELETE …/seeds/{job}` → 204, unknown job → 404). Without it the endpoint answers 501 and SLS just stops tracking the job. |
@@ -386,6 +388,90 @@ $client->userDeleted($tenantId, $appUserId);
   events is still covered, just a day later.
 - On **Adopt**, SLS PUTs its user onto the existing app user (same `id`), setting `slsUserId`;
   from then on it's managed like any other.
+
+## Claiming an existing company (claim codes)
+
+A company that already uses the app on its own (standalone: linked to no SLS org or company) can
+come under an SLS organization without losing its data. The company's admin proves ownership with a
+**claim code** the app issues; SLS sends it back when it connects the company. This is an additive
+extension of contract 2: apps that don't implement it keep working (`claim.owner_email` stays).
+
+**Issuing a code.** A company admin of a standalone company presses "Create a claim code" (a
+"Connect to SLS" page in the app's settings). `Provisioning\ClaimCodes` does the mechanics:
+
+```php
+use Smartlabsys\SlsConnectorBundle\Provisioning\ClaimCodes;
+
+$code = ClaimCodes::generate();          // "ABCD-EFGH-JKLM": 12 chars of ABCDEFGHJKLMNPQRSTUVWXYZ23456789
+$company->slsClaimCodeHash      = ClaimCodes::hash($code);        // sha256 of the normalized code — store only this
+$company->slsClaimCodeExpiresAt = ClaimCodes::expiresAt();        // now + 30 minutes (ClaimCodes::TTL_SECONDS)
+// show $code once; a new code replaces the old one (one live code per company)
+
+ClaimCodes::normalize(' abcd-efgh jklm ');   // "ABCDEFGHJKLM": uppercase, no spaces or dashes
+ClaimCodes::isWellFormed('ABCDEFGHJKLM');    // length + alphabet check of a normalized code
+ClaimCodes::verify($input, $storedHash);     // hash_equals() against the stored hash
+```
+
+Keep who created it and when it was used next to the hash. A company already connected to SLS
+can't create a code.
+
+**Sign-in variant: `/sls/claim`.** Instead of typing the code, the SLS wizard can send the admin to
+`{instance base URL}/sls/claim?return_to=<SLS URL>&state=<opaque>&org_name=<SLS org name>`. The app
+requires a signed-in company admin (normal login), asks "Connect <company> to SLS organization
+<org_name>?", and on Confirm creates a code as above and redirects to
+`return_to?code=<code>&state=<state>` (`state` unchanged). `return_to` must start with the
+configured SLS issuer (`%sls_connector.issuer%`); refuse anything else (open redirect). The bundle
+doesn't ship this controller yet: apps on v0.1 implement it locally.
+
+**`claim.code` in `POST /tenants` and `POST /tenants/preview`.** SLS sends
+`"claim": {"owner_email": "…", "code": "ABCD-EFGH-JKLM"}` (either may be absent); the bundle passes
+the code, trimmed, as `TenantRequest::$claimCode` (null when absent or empty). Lookup order:
+
+1. the tenant linked to `sls_company_id`;
+2. the org's tenant without a company (made before contract 2);
+3. **claim by code**: the code's hash matches a live (unexpired, unused) code whose company is still
+   standalone;
+4. claim by `owner_email`;
+5. create.
+
+A code that doesn't match, has expired, was used, or whose company is already connected answers
+**`422 {"error": "invalid_claim_code", "message": …}`** from both preview and create: throw
+`ContractException::invalidClaimCode()` (or `new ContractException(422, 'invalid_claim_code', …)`).
+Never fall through to creating a tenant — the admin asked to claim.
+
+**Preview.** For a claim by code, answer with the app's current details and its local users, so
+the wizard can show a per-field merge table and link users by e-mail:
+
+```php
+return TenantPreview::claimByCode($tenant, $companyDetails, [
+    ['id' => $user->id, 'email' => $user->email, 'name' => $user->name, 'active' => $user->active, 'roles' => ['qc:analyst']],
+]);
+// {"action": "claim", "tenant": {…}, "details": {name, tax_id, registration_number, public_funds_id,
+//   address, city, postal_code, country}, "users": [{id, email, name, active, roles}]}
+```
+
+`details` has the `company` block's keys (null where the app has no such field; `country` ISO-2 or
+null). `users` are all the company's local users, active or not, at most 500
+(`TenantPreview::MAX_USERS`). A claim by `owner_email` keeps the old shape (no `details` / `users`);
+both are serialized only when set.
+
+**Create.** A valid code links the company to `sls_org_id` / `sls_company_id` as the existing claim
+does, **marks the code used**, then overwrites the SLS-managed fields with the `company` block
+(SLS sends the merged details) and answers `201` with `{tenant_id, status, name}`. A repeat
+`POST /tenants` with the same `sls_company_id` is found by step 1 and answers `200`; the used code
+isn't checked again. Log "Company claimed by SLS organization …" (and add it to the app's audit
+trail if it has one).
+
+**Manifest.** Declare support so SLS offers "Already uses <app> — claim it":
+
+```yaml
+sls_connector:
+    tenants: { claim_code: true }        # manifest: "tenants": {"claim_code": true}
+```
+
+Nothing is emitted when it's false, so other manifests are unchanged. Apps still on bundle v0.1
+add `"tenants": {"claim_code": true}` through their `ManifestExtras` shim
+(`app.sls_manifest_extras`).
 
 ## Contract test suite
 

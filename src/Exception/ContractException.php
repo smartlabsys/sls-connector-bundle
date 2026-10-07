@@ -34,6 +34,15 @@ class ContractException extends \RuntimeException
         return new self(409, $error, $message, 'uniqueness');
     }
 
+    /**
+     * Phase 13: `claim.code` doesn't match a live (unexpired, unused) code of a standalone company.
+     * Answer it from both `create()` and `preview()` — never fall through to creating a tenant.
+     */
+    public static function invalidClaimCode(string $message = 'The claim code is invalid, expired or already used.'): self
+    {
+        return new self(422, 'invalid_claim_code', $message);
+    }
+
     public static function notImplemented(string $message): self
     {
         return new self(501, 'not_implemented', $message);

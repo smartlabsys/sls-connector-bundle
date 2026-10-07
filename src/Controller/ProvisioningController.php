@@ -205,15 +205,18 @@ final class ProvisioningController
             }
         }
 
+        $claim = is_array($body['claim'] ?? null) ? $body['claim'] : [];
+
         return new TenantRequest(
             trim($orgId),
             trim($org['name']),
             self::optionalString($org['slug'] ?? null),
             self::optionalString($org['locale'] ?? null),
             $body,
-            is_array($body['claim'] ?? null) ? self::optionalString($body['claim']['owner_email'] ?? null) : null,
+            self::optionalString($claim['owner_email'] ?? null),
             $companyId,
             $company,
+            self::optionalString($claim['code'] ?? null),
         );
     }
 

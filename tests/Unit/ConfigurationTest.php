@@ -134,6 +134,16 @@ final class ConfigurationTest extends TestCase
         ]], (new ManifestBuilder($config))->build()['integration']['partnership_roles']);
     }
 
+    public function testClaimCodeFlagReachesTheManifestOnlyWhenSet(): void
+    {
+        $config = $this->load($this->config())->getParameter('sls_connector.config');
+        self::assertSame(['claim_code' => false], $config['tenants']);
+        self::assertArrayNotHasKey('tenants', (new ManifestBuilder($config))->build(), 'not emitted by default');
+
+        $config = $this->load($this->config(['tenants' => ['claim_code' => true]]))->getParameter('sls_connector.config');
+        self::assertSame(['claim_code' => true], (new ManifestBuilder($config))->build()['tenants']);
+    }
+
     public function testRejectsPartnershipRoleOfAnotherApp(): void
     {
         $this->expectException(InvalidConfigurationException::class);

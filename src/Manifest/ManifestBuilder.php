@@ -80,7 +80,10 @@ final class ManifestBuilder
                 'emits'    => array_values($this->config['events']['emits']),
                 'consumes' => array_values($this->config['events']['consumes']),
             ],
-        ];
+        ] + (($this->config['tenants']['claim_code'] ?? false) ? [
+            // Phase 13: only emitted when set, so manifests of apps without claim codes stay unchanged.
+            'tenants' => ['claim_code' => true],
+        ] : []);
     }
 
     public function appVersion(): string
