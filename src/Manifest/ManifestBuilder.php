@@ -80,7 +80,13 @@ final class ManifestBuilder
                 'emits'    => array_values($this->config['events']['emits']),
                 'consumes' => array_values($this->config['events']['consumes']),
             ],
-        ] + (($this->config['tenants']['claim_code'] ?? false) ? [
+        ] + (($this->config['seed_packages']['format'] ?? null) !== null ? [
+            // 0.4: only emitted when set, like `tenants`.
+            'seed_packages' => [
+                'format'         => $this->config['seed_packages']['format'],
+                'schema_version' => $this->config['seed_packages']['schema_version'],
+            ],
+        ] : []) + (($this->config['tenants']['claim_code'] ?? false) ? [
             // Phase 13: only emitted when set, so manifests of apps without claim codes stay unchanged.
             'tenants' => ['claim_code' => true],
         ] : []);

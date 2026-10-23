@@ -99,6 +99,7 @@ final class Kernel extends BaseKernel
                     ],
                 ],
             ]],
+            'seed_packages'  => ['format' => 'demo-config', 'schema_version' => 1],
             'integration'    => [
                 'provides' => [
                     ['scope' => $key . ':orders.read', 'label' => ['en' => 'Read orders', 'sr' => 'Čitanje porudžbina']],

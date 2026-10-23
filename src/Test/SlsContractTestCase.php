@@ -370,6 +370,65 @@ abstract class SlsContractTestCase extends WebTestCase
         }
     }
 
+    /** Seed packages (doc 08): catalog, export, then preview and import of that file into another tenant. */
+    public function testContractSeedPackages(): void
+    {
+        $format = $this->config()['seed_packages']['format'] ?? null;
+        $source = $this->newTenant();
+        $token  = $this->serviceToken(['sls:provision'], $source);
+        $url    = '/sls/provisioning/tenants/' . $source . '/packages';
+        if ($format === null) {
+            [$status] = $this->call('GET', $url . '/catalog', $token);
+            self::assertSame(501, $status, 'Without `seed_packages` the package endpoints answer 501.');
+
+            return;
+        }
+
+        [$status, $catalog] = $this->call('GET', $url . '/catalog', $token);
+        self::assertSame(200, $status);
+        self::assertSame($format, $catalog['format']);
+        self::assertIsArray($catalog['sections']);
+        $selection = [];
+        foreach ($catalog['sections'] as $section) {
+            self::assertIsString($section['key']);
+            self::assertIsString($section['label']['en'] ?? null);
+            self::assertIsArray($section['items']);
+            $selection[$section['key']] = true;
+        }
+
+        [$status, $package] = $this->call('POST', $url . '/export', $token, ['selection' => $selection === [] ? new \stdClass() : $selection]);
+        self::assertSame(200, $status, json_encode($package));
+        self::assertSame([1, $format, $this->config()['seed_packages']['schema_version']], [$package['sls_seed_package'], $package['format'], $package['schema_version']]);
+        self::assertIsArray($package['data']);
+        self::assertIsArray($package['contents']);
+
+        $target = $this->newTenant();
+        $token  = $this->serviceToken(['sls:provision'], $target);
+        $url    = '/sls/provisioning/tenants/' . $target . '/packages';
+        $context = ['org' => ['name' => 'Contract org', 'locale' => 'en']];
+
+        [$status, $report] = $this->call('POST', $url . '/preview', $token, ['package' => $package, 'context' => $context]);
+        self::assertSame(200, $status, json_encode($report));
+        self::assertIsArray($report['sections']);
+        self::assertIsArray($report['warnings']);
+
+        [$status, $body] = $this->call('POST', $url . '/preview', $token, ['package' => ['format' => 'not-' . $format] + $package]);
+        self::assertSame(422, $status);
+        self::assertSame('unsupported_package', $body['error']);
+        [$status, $body] = $this->call('POST', $url . '/preview', $token, ['package' => ['schema_version' => $package['schema_version'] + 1] + $package]);
+        self::assertSame(422, $status);
+        self::assertSame('unsupported_package_version', $body['error']);
+
+        $key = $this->uid();
+        [$status, $job] = $this->call('POST', $url . '/import', $token, ['package' => $package, 'context' => $context, 'idempotency_key' => $key]);
+        self::assertSame(202, $status, json_encode($job));
+        self::assertContains($job['status'], ['queued', 'running', 'succeeded', 'failed']);
+        [$status, $again] = $this->call('POST', $url . '/import', $token, ['package' => $package, 'context' => $context, 'idempotency_key' => $key]);
+        self::assertSame([202, $job['job_id']], [$status, $again['job_id']], 'Same idempotency key, same job.');
+        [$status, $body] = $this->call('GET', '/sls/provisioning/tenants/' . $target . '/seeds/' . $job['job_id'], $token);
+        self::assertSame([200, $job['job_id']], [$status, $body['job_id']], 'The import is read back as a seed job.');
+    }
+
     // ── SCIM ─────────────────────────────────────────────────────────────────
 
     public function testContractScimDiscovery(): void

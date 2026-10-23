@@ -11,6 +11,7 @@ use Smartlabsys\SlsConnectorBundle\Provisioning\Model\SeedRequest;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\Tenant;
 use Smartlabsys\SlsConnectorBundle\Provisioning\Model\TenantRequest;
 use Smartlabsys\SlsConnectorBundle\Provisioning\SeedHandlerInterface;
+use Smartlabsys\SlsConnectorBundle\Provisioning\SeedPackageHandlerInterface;
 use Smartlabsys\SlsConnectorBundle\Provisioning\TenantPreviewInterface;
 use Smartlabsys\SlsConnectorBundle\Provisioning\TenantProvisionerInterface;
 use Smartlabsys\SlsConnectorBundle\Security\ServiceRequestGuard;
@@ -179,6 +180,127 @@ final class ProvisioningController
 
             return new JsonResponse(null, 204);
         });
+    }
+
+    /** Seed packages (doc 08): what this tenant can export, by section. */
+    #[Route('/{tenantId}/packages/catalog', name: 'package_catalog', methods: ['GET'])]
+    public function packageCatalog(Request $request, string $tenantId): JsonResponse
+    {
+        return $this->handle(function () use ($request, $tenantId): JsonResponse {
+            $this->guard->require($request, self::SCOPE, $tenantId);
+            $handler = $this->packageHandler();
+            $this->found($this->provisioner()->get($tenantId));
+
+            return new JsonResponse([
+                'format'         => $this->config['seed_packages']['format'],
+                'schema_version' => $this->config['seed_packages']['schema_version'],
+                'sections'       => $handler->packageCatalog($tenantId),
+            ]);
+        });
+    }
+
+    /** `{selection: {section: [ids] | true}}` → the package (200), wrapped in the bundle's envelope. */
+    #[Route('/{tenantId}/packages/export', name: 'package_export', methods: ['POST'])]
+    public function packageExport(Request $request, string $tenantId): JsonResponse
+    {
+        return $this->handle(function () use ($request, $tenantId): JsonResponse {
+            $this->guard->require($request, self::SCOPE, $tenantId);
+            $handler = $this->packageHandler();
+            $this->found($this->provisioner()->get($tenantId));
+
+            $selection = $this->jsonBody($request)['selection'] ?? null;
+            if (!is_array($selection) || $selection === [] || array_is_list($selection)) {
+                throw ContractException::badRequest('"selection" must be an object of section → item ids (or true).');
+            }
+            foreach ($selection as $section => $items) {
+                $valid = $items === true || (is_array($items) && array_is_list($items) && array_filter($items, 'is_string') === $items);
+                if (!is_string($section) || !$valid) {
+                    throw ContractException::badRequest(sprintf('"selection.%s" must be a list of ids or true.', $section));
+                }
+            }
+
+            $export   = $handler->exportPackage($tenantId, $selection);
+            $response = new JsonResponse([
+                'sls_seed_package' => 1,
+                'app'              => $this->config['app']['key'],
+                'format'           => $this->config['seed_packages']['format'],
+                'schema_version'   => $this->config['seed_packages']['schema_version'],
+                'exported_at'      => (new \DateTimeImmutable())->format(\DATE_ATOM),
+                'source'           => (object) ($export['source'] ?? []),
+                'contents'         => (object) $export['contents'],
+                'data'             => (object) $export['data'],
+            ]);
+            $response->setEncodingOptions(JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+            return $response;
+        });
+    }
+
+    /** `{package, context?}` → what an import would create and skip (200); nothing changes. */
+    #[Route('/{tenantId}/packages/preview', name: 'package_preview', methods: ['POST'])]
+    public function packagePreview(Request $request, string $tenantId): JsonResponse
+    {
+        return $this->handle(function () use ($request, $tenantId): JsonResponse {
+            $this->guard->require($request, self::SCOPE, $tenantId);
+            $handler = $this->packageHandler();
+            $this->found($this->provisioner()->get($tenantId));
+            [$package, $context] = $this->packageBody($request);
+
+            $report = $handler->previewPackage($tenantId, $package, $context);
+
+            return new JsonResponse(['sections' => (object) $report['sections'], 'warnings' => array_values($report['warnings'])]);
+        });
+    }
+
+    /** `{package, context?, idempotency_key?}` → 202 and a seed job, read back with `GET …/seeds/{job}`. */
+    #[Route('/{tenantId}/packages/import', name: 'package_import', methods: ['POST'])]
+    public function packageImport(Request $request, string $tenantId): JsonResponse
+    {
+        return $this->handle(function () use ($request, $tenantId): JsonResponse {
+            $this->guard->require($request, self::SCOPE, $tenantId);
+            $handler = $this->packageHandler();
+            $this->found($this->provisioner()->get($tenantId));
+            [$package, $context, $body] = $this->packageBody($request);
+
+            $job = $handler->importPackage($tenantId, $package, $context, self::optionalString($body['idempotency_key'] ?? null));
+
+            return new JsonResponse($job->toArray(), 202);
+        });
+    }
+
+    /**
+     * The package of a preview / import, its envelope checked against `seed_packages`.
+     *
+     * @return array{0: array<string, mixed>, 1: array<string, mixed>, 2: array<string, mixed>}
+     */
+    private function packageBody(Request $request): array
+    {
+        $body    = $this->jsonBody($request);
+        $package = $body['package'] ?? null;
+        $context = $body['context'] ?? [];
+        if (!is_array($package) || !is_array($context)) {
+            throw ContractException::badRequest('"package" and "context" must be objects.');
+        }
+        $format  = $this->config['seed_packages']['format'];
+        $version = $package['schema_version'] ?? null;
+        if (($package['format'] ?? null) !== $format || !is_int($version) || !is_array($package['data'] ?? null)) {
+            throw new ContractException(422, 'unsupported_package', sprintf('This is not a "%s" package.', $format));
+        }
+        if ($version < 1 || $version > $this->config['seed_packages']['schema_version']) {
+            throw new ContractException(422, 'unsupported_package_version', sprintf('This app reads "%s" packages up to version %d.', $format, $this->config['seed_packages']['schema_version']));
+        }
+
+        return [$package, $context, $body];
+    }
+
+    private function packageHandler(): SeedPackageHandlerInterface
+    {
+        $handler = $this->seedHandler;
+        if (!$handler instanceof SeedPackageHandlerInterface || $this->config['seed_packages']['format'] === null) {
+            throw ContractException::notImplemented('This app does not export or import seed packages.');
+        }
+
+        return $handler;
     }
 
     /** The body of `POST /tenants` and `POST /tenants/preview`. */

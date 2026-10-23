@@ -67,7 +67,7 @@ Requirements: PHP ≥ 8.2 and Symfony 7.4 (framework, security, http-client, cac
 
 ```bash
 composer config repositories.sls-connector vcs https://github.com/smartlabsys/sls-connector-bundle
-composer require smartlabsys/sls-connector-bundle:^0.3
+composer require smartlabsys/sls-connector-bundle:^0.4
 ```
 
 To work on the bundle and an app side by side, point the app at a local checkout instead
@@ -123,6 +123,9 @@ sls_connector:
               label: { en: Sample types, sr: Vrste uzoraka }
               description: { en: Which sample types to create. }   # optional help text
               choice_labels: { food: { en: Food, sr: Hrana }, water: { en: Water, sr: Voda } }
+    seed_packages:                           # configuration as a file between tenants (0.4) — optional
+        format: qc-config                    # your own name for the file's `data`; null (default) turns it off
+        schema_version: 1                    # bump when `data` changes in a way older releases can't read
     events:                                  # events between apps (0.3) — optional
         emits: ['qc.request.created']        # own events SLS brokers to linked apps: "<app key>." prefix
         consumes: ['lims.request.updated']  # other apps' events this app wants (SlsAppEvent)
@@ -271,6 +274,7 @@ implementations of one interface, alias the interface to the one you want.
 | `Provisioning\TenantProvisionerInterface` | provisioning | `create()` is idempotent on `TenantRequest::$slsCompanyId` (contract 2; 201 new / 200 existing), or on `sls_org_id` when a contract 1 platform sends no company. A tenant made under contract 1 (org only) is linked to the first company of that org that asks; see the interface for the lookup order. `TenantRequest::$company` (`CompanyDetails`) carries the company's details (0.3.1: `wasSent($key)` / `toArray(onlySent: true)` tell a key SLS left out from one it sent blank): SLS owns them once connected, and `company.updated` (`sls.webhook.company.updated`) brings changes. A dedicated install returns its one tenant. `TenantRequest::$claimOwnerEmail` (the connecting user's verified e-mail) lets you link an existing, not-yet-linked tenant that user owns instead of creating a duplicate (201). `TenantRequest::$claimCode` (`claim.code`) claims the company that issued the code; see [Claiming an existing company](#claiming-an-existing-company-claim-codes). |
 | `Provisioning\TenantPreviewInterface` | tenant preview (optional) | `preview()` answers `POST /tenants/preview`: what `create()` would do for the same request (`existing` / `claim` / `create`, with the tenant for the first two) without writing anything. SLS's connect wizard shows it ("your existing company will be linked"). Without it the endpoint answers 501 and SLS shows a neutral message. Implement it on your provisioner with the same lookup `create()` uses. |
 | `Provisioning\SeedHandlerInterface` | seed templates (optional) | `start()` queues the work and returns a `SeedJob`. The endpoint answers 202. |
+| `Provisioning\SeedPackageHandlerInterface` | seed packages (optional, 0.4) | Extends the seed handler with `packageCatalog()`, `exportPackage()`, `previewPackage()` and `importPackage()`; see [Seed packages](#seed-packages-04). Needs `seed_packages.format`. Without both the package endpoints answer 501. |
 | `Provisioning\CancellableSeedHandlerInterface` | cancelling seeds (optional) | Extends the seed handler with `cancel()`: stop a queued / running job (`DELETE …/seeds/{job}` → 204, unknown job → 404). Without it the endpoint answers 501 and SLS just stops tracking the job. |
 | `Scim\ScimUserMapperInterface` | SCIM users | CRUD on `ScimUser`. Throw `ContractException::conflict(…, 'uniqueness')` for a duplicate `userName`. |
 | `Scim\ScimGroupMapperInterface` | SCIM groups (optional) | Without it, `/Groups` answers 501. |
@@ -416,6 +420,28 @@ $client->sendEvent('some.event', $tenantId, $data);           // any event SLS a
 
 Report async seeds with `seedCompleted()` once the job ends. SLS also keeps polling
 `GET /seeds/{job}` as a fallback.
+
+### Seed packages (0.4)
+
+A tenant's configuration (catalogs, templates, roles: whatever your app calls setup) can leave
+as a file and be imported into another tenant. SLS drives it from the connection's Starter data
+page and keeps a library of such files that any organization can run. Set `seed_packages.format`
+and implement `SeedPackageHandlerInterface` on your seed handler:
+
+| Endpoint (`/sls/provisioning/tenants/{tenantId}/packages/…`) | Handler | Answer |
+|---|---|---|
+| `GET catalog` | `packageCatalog()` | `{format, schema_version, sections: [{key, label, requires?, items: [{id, label}]}]}` |
+| `POST export` `{selection: {section: [ids] \| true}}` | `exportPackage()` | the package: `{sls_seed_package: 1, app, format, schema_version, exported_at, source, contents, data}` |
+| `POST preview` `{package, context?}` | `previewPackage()` | `{sections: {key: {create, skip}}, warnings: [..]}`, nothing changed |
+| `POST import` `{package, context?, idempotency_key?}` | `importPackage()` | 202 and a seed job, read back with `GET …/seeds/{job}` |
+
+The bundle owns the envelope and checks it before calling you: another `format` is 422
+`unsupported_package`, a `schema_version` above yours is 422 `unsupported_package_version`.
+`data` is yours. Keep imports to the seed rules: same idempotency key, same job; never delete;
+skip what the tenant already has (match on natural keys, since ids differ between tenants). Put
+created / skipped counts in the job's summary (`<section>.created`, `<section>.skipped`). Throw
+`ContractException(422, 'invalid_package', …)` for a file you can't read. The contract test suite
+round-trips a package between two new tenants when the format is set.
 
 ### Reporting local users
 
