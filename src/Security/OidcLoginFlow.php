@@ -41,7 +41,8 @@ final class OidcLoginFlow
         return $this->audience . ManifestBuilder::ENDPOINTS['oidc_callback'];
     }
 
-    public function authorizationUrl(SessionInterface $session, ?string $targetPath, ?string $prompt = null): string
+    /** `$loginHint`: the e-mail the user already typed here; the platform pre-fills its sign-in form with it. */
+    public function authorizationUrl(SessionInterface $session, ?string $targetPath, ?string $prompt = null, ?string $loginHint = null): string
     {
         $state    = self::random();
         $nonce    = self::random();
@@ -64,6 +65,7 @@ final class OidcLoginFlow
             'code_challenge'        => rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '='),
             'code_challenge_method' => 'S256',
             'prompt'                => $prompt,
+            'login_hint'            => $loginHint !== null ? mb_substr(trim($loginHint), 0, 254) : null,
         ]);
 
         return $this->metadata->endpoint('authorization_endpoint') . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);

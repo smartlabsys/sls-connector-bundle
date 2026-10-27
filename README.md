@@ -198,6 +198,10 @@ For the login button, call the `sls_login_url()` Twig function (with an optional
 <a href="{{ sls_login_url() }}">{{ 'sls.login.button'|trans }}</a>
 ```
 
+A second argument (or `?login_hint=` on `/sls/oidc/login`) passes an e-mail as the OIDC `login_hint`,
+so the platform's sign-in form opens with it filled in. Use it when your own login form finds that the
+e-mail belongs to an SLS user: send the browser there instead of checking the password locally.
+
 With `api.accept_app_tokens: true`, a sibling app's own token (`sub` = its `client_id`) passes
 the `api` firewall as a `Security\SlsAppUser` (`ROLE_SLS_APP`, with `app`, `instanceId`,
 `organizationId`, `tenantId` and `callerTenantId`, the caller's own tenant). Otherwise such

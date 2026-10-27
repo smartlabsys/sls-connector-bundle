@@ -43,6 +43,7 @@ final class OidcController
             $request->getSession(),
             $request->query->get('target'),
             in_array($prompt, ['none', 'consent', 'login'], true) ? $prompt : null,
+            $request->query->get('login_hint'),
         ));
     }
 
